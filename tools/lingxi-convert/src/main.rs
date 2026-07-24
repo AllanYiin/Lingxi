@@ -123,50 +123,54 @@ fn convert_dict(resources: &Path, modeling: &Path) -> Result<DictModel> {
             .collect()
     };
 
-    // 主詞典 + 台灣詞典合併。規則：頻率高者勝；同頻率偏好有實際詞性者。
+    // 只用主詞典。刻意排除的來源（皆為未審核的自動抽詞噪音，會產生
+    // 假 DAG 邊搶走正詞，如「與國」搶「國民黨」、「一起去」搶「一起」）：
+    //   - TaiwanDict.json：全部 unknown/freq 0 的 n-gram
+    //   - 主詞典中 tag = unknownnew 的條目（舊版新詞識別的中間產物）
+    // 主詞典中 freq=0 但有真實詞性者為正規詞彙表，保留（0.5 平滑）。
+    let _ = modeling; // TaiwanDict 所在目錄，現已不使用；保留參數以維持 CLI 介面
     let mut merged: BTreeMap<String, RawEntry> = BTreeMap::new();
     let mut skipped = 0usize;
-    for path in [resources.join("Dict.json"), modeling.join("TaiwanDict.json")] {
-        let json = read_json(&path)?;
-        for (word, arr) in json.as_object().context("詞典非物件")? {
-            let word = normalize(word);
-            if word.is_empty() || word.chars().count() > 255 {
+    let mut noise = 0usize;
+    let json = read_json(&resources.join("Dict.json"))?;
+    for (word, arr) in json.as_object().context("詞典非物件")? {
+        let word = normalize(word);
+        if word.is_empty() || word.chars().count() > 255 {
+            skipped += 1;
+            continue;
+        }
+        let (tag, freq) = match (
+            arr.get(0).and_then(Value::as_str),
+            arr.get(1).and_then(Value::as_f64),
+        ) {
+            (Some(t), Some(f)) => (t.to_string(), f),
+            _ => {
                 skipped += 1;
                 continue;
             }
-            let (tag, freq) = match (
-                arr.get(0).and_then(Value::as_str),
-                arr.get(1).and_then(Value::as_f64),
-            ) {
-                (Some(t), Some(f)) => (t.to_string(), f),
-                _ => {
-                    skipped += 1;
-                    continue;
-                }
-            };
-            match merged.get_mut(&word) {
-                None => {
-                    merged.insert(word, RawEntry { tag, freq });
-                }
-                Some(old) => {
-                    let better_freq = freq > old.freq;
-                    let better_tag = old.tag == "unknown" && tag != "unknown";
-                    if better_freq {
-                        // 高頻勝出，但不要用 unknown 覆蓋已知詞性。
-                        if tag != "unknown" {
-                            old.tag = tag;
-                        }
-                        old.freq = freq;
-                    } else if better_tag {
+        };
+        if tag == "unknownnew" {
+            noise += 1;
+            continue;
+        }
+        match merged.get_mut(&word) {
+            None => {
+                merged.insert(word, RawEntry { tag, freq });
+            }
+            // 正規化後同形（如 臺灣/台灣）：取高頻，不用 unknown 覆蓋已知詞性。
+            Some(old) => {
+                if freq > old.freq {
+                    if tag != "unknown" {
                         old.tag = tag;
                     }
+                    old.freq = freq;
+                } else if old.tag == "unknown" && tag != "unknown" {
+                    old.tag = tag;
                 }
             }
         }
     }
-    if skipped > 0 {
-        println!("[dict] 略過無法解析的詞條 {skipped} 筆");
-    }
+    println!("[dict] 略過無法解析 {skipped} 筆、unknownnew 噪音 {noise} 筆");
 
     // 頻率 0 的詞（多來自 TaiwanDict）以 0.5 平滑，避免 log(0)。
     let effective = |freq: f64| if freq > 0.0 { freq } else { 0.5 };

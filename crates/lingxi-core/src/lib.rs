@@ -98,7 +98,7 @@ impl Segmenter {
 
         // 統一詞性表：字串為對齊介面，重複名稱共用同一 id。
         let mut tags: Vec<String> = Vec::new();
-        let mut intern = |name: &str, tags: &mut Vec<String>| -> u8 {
+        let intern = |name: &str, tags: &mut Vec<String>| -> u8 {
             match tags.iter().position(|t| t == name) {
                 Some(i) => i as u8,
                 None => {
