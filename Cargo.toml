@@ -3,6 +3,7 @@ resolver = "2"
 members = [
     "crates/lingxi-core",
     "crates/lingxi-cli",
+    "crates/lingxi-py",
     "tools/lingxi-convert",
 ]
 

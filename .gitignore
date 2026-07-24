@@ -1,3 +1,4 @@
 /target
 assets/*.bin
 Cargo.lock
+crates/lingxi-py/python/lingxi/assets/
