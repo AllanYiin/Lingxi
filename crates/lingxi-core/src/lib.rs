@@ -7,15 +7,19 @@ pub mod chunk;
 pub mod dag;
 pub mod dict;
 pub mod hmm;
+pub mod keyword;
 pub mod model;
 pub mod pos;
 pub mod segment;
+pub mod userdict;
 
 use std::path::Path;
 
 use chunk::ChunkKind;
 use dict::Dict;
+pub use keyword::Keyword;
 pub use segment::{SegKind, Segment};
+pub use userdict::{parse_user_dict, UserDictEntry};
 
 /// 帶詞性的分詞結果：原始輸入的 byte 區間 + 統一詞性表的 tag id。
 /// 詞字串由呼叫端以 `&text[byte_start..byte_end]` 取得（零拷貝），
@@ -58,6 +62,7 @@ pub struct Segmenter {
 pub enum LoadError {
     Io(std::io::Error),
     Asset(model::AssetError),
+    UserDict(String),
 }
 
 impl std::fmt::Display for LoadError {
@@ -65,6 +70,7 @@ impl std::fmt::Display for LoadError {
         match self {
             LoadError::Io(e) => write!(f, "讀取模型檔失敗: {e}"),
             LoadError::Asset(e) => write!(f, "{e}"),
+            LoadError::UserDict(e) => write!(f, "載入自訂詞典失敗: {e}"),
         }
     }
 }
@@ -80,11 +86,20 @@ fn load_asset<T: serde::de::DeserializeOwned>(path: &Path) -> Result<T, LoadErro
 impl Segmenter {
     /// 從資產目錄載入（需含 dict.bin、hmm_bmes.bin、hmm_pos.bin）。
     pub fn from_asset_dir(dir: impl AsRef<Path>) -> Result<Self, LoadError> {
+        Self::from_asset_dir_with_user_dict(dir, &[])
+    }
+
+    /// 從資產目錄載入並附加自訂詞典（詞條見 `userdict` 模組）。
+    pub fn from_asset_dir_with_user_dict(
+        dir: impl AsRef<Path>,
+        user_entries: &[UserDictEntry],
+    ) -> Result<Self, LoadError> {
         let dir = dir.as_ref();
-        Self::from_models(
+        Self::from_models_with_user_dict(
             load_asset(&dir.join("dict.bin"))?,
             load_asset(&dir.join("hmm_bmes.bin"))?,
             load_asset(&dir.join("hmm_pos.bin"))?,
+            user_entries,
         )
     }
 
@@ -94,7 +109,19 @@ impl Segmenter {
         bmes: model::BmesModel,
         pos: model::PosModel,
     ) -> Result<Self, LoadError> {
-        let dict = Dict::from_model(dict_model);
+        Self::from_models_with_user_dict(dict_model, bmes, pos, &[])
+    }
+
+    /// 由已解碼的模型組裝並附加自訂詞典。
+    /// 自訂詞典必須在此（統一詞性表建表前）載入，其新增詞性才會進表。
+    pub fn from_models_with_user_dict(
+        dict_model: model::DictModel,
+        bmes: model::BmesModel,
+        pos: model::PosModel,
+        user_entries: &[UserDictEntry],
+    ) -> Result<Self, LoadError> {
+        let mut dict = Dict::from_model(dict_model);
+        dict.install_user_dict(user_entries).map_err(LoadError::UserDict)?;
 
         // 統一詞性表：字串為對齊介面，重複名稱共用同一 id。
         let mut tags: Vec<String> = Vec::new();

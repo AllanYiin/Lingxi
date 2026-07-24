@@ -13,6 +13,15 @@
      → Token { byte 區間, 詞性 }（零拷貝，詞由呼叫端切片）
 ```
 
+附加功能（建立在上述管線之上）：
+- **自訂詞典**：建構時載入 jieba 格式詞條（`詞 [頻率] [詞性]`），建成第二個
+  AC 自動機與主詞典共同建 DAG 邊。頻率省略時自動推定為「恰好贏過現行切分」
+  （jieba `suggest_freq` 語意——只保證贏過詞內部切分；若被跨界詞搶走，改給
+  顯式高頻率）。同詞覆蓋主詞典時取機率高者，詞性一併覆蓋。
+- **TextRank 關鍵字抽取**：`extract_keywords(text, top_k)`，jieba 相容參數
+  （window=5、d=0.85、10 次迭代），預設候選詞性為名詞類/動詞/英文詞，
+  可用 `allow_tags` 白名單覆寫。純演算法、無額外模型資產。
+
 與舊版的主要差異（刻意簡化，黃金集驗證等價或更好）：
 - 移除 MM/RMM 雙向多候選評分：全 DAG 全域 DP 是其嚴格超集
 - 二階 HMM 改為數學正確的 16 複合狀態標準 Viterbi（舊版為含硬編碼特例的樹狀近似）
@@ -58,7 +67,16 @@ seg = lingxi.load()                    # wheel 內附模型；或 load(asset_dir
 seg.cut("金管會前主委參加記者會")        # -> list[str]
 seg.tokenize("...")                    # -> list[Token(word, tag, start, end)]，字元座標
 seg.cut_batch(texts)                   # rayon 平行，釋放 GIL
+
+# 自訂詞典：檔案路徑或詞條行列表（jieba 格式）
+seg = lingxi.load(user_dict=["板南線 nt", "柯文哲 nr", "鹽酥雞 100000 n"])
+
+# TextRank 關鍵字 -> [(詞, 權重)]，權重降冪
+seg.extract_keywords(text, top_k=20)
+seg.extract_keywords(text, top_k=20, allow_tags=["n", "nt", "ns"])
 ```
+
+CLI 對應：`--user-dict 詞典檔`、`--keywords N`（全文抽取模式）。
 
 ## 實測數據（Windows 11, x86_64）
 
@@ -70,10 +88,10 @@ seg.cut_batch(texts)                   # rayon 平行，釋放 GIL
 
 ## 已知限制
 
-- 詞典缺詞：板南線、鹽酥雞、資源回收（整詞）等不在舊詞典——需要自訂詞典
-  機制（載入時把使用者詞條併入 AC 自動機重建，尚未實作）
 - 詞典頻率噪音：部分條目頻率來自舊 PTT 語料的錯誤切分（如「民黨」freq 11 萬），
   長期解法是用乾淨語料重訓頻率
 - 人名辨識依賴 HMM/POS（舊版姓氏表規則已移除）：「柯文哲」若姓氏+名首字
-  恰為詞典詞（柯文）會切錯
+  恰為詞典詞（柯文）會切錯——可用自訂詞典（`柯文哲 nr`）修正
+- 自訂詞典的自動頻率只保證贏過詞內部切分；被跨界詞搶走時（如「吃鹽」搶走
+  「鹽酥雞」的首字）需給顯式高頻率
 - 全形數字（０-９）未特別處理（與舊版行為一致）

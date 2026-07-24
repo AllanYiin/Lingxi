@@ -36,7 +36,12 @@ pub fn cut_dag(dict: &Dict, chunk: &str, byte_base: usize, out: &mut Vec<Segment
     }
     // 單字元 chunk 直接輸出，省去建 DAG。
     if n == 1 {
-        let word_id = dict.matches(chunk).find(|m| m.byte_end == chunk.len()).map(|m| m.word_id);
+        // 主詞典與自訂詞典皆可能命中同一字，取機率高者（自訂覆蓋語意）。
+        let word_id = dict
+            .matches(chunk)
+            .filter(|m| m.byte_end == chunk.len())
+            .max_by(|a, b| dict.log_prob(a.word_id).total_cmp(&dict.log_prob(b.word_id)))
+            .map(|m| m.word_id);
         out.push(Segment {
             byte_start: byte_base,
             byte_end: byte_base + chunk.len(),
@@ -92,9 +97,11 @@ pub fn cut_dag(dict: &Dict, chunk: &str, byte_base: usize, out: &mut Vec<Segment
     while i < n {
         let end = route[i].1 as usize;
         // 重查該邊的 word_id：邊桶內線性找（每桶通常僅數條）。
+        // 同區間可能有主詞典與自訂詞典兩條邊，取機率高者（DP 選中的即是它）。
         let word_id = edges[i]
             .iter()
-            .find(|e| e.end as usize == end)
+            .filter(|e| e.end as usize == end)
+            .max_by(|a, b| a.log_prob.total_cmp(&b.log_prob))
             .and_then(|e| e.word_id);
         out.push(Segment {
             byte_start: byte_base + boundaries[i] as usize,
@@ -192,5 +199,55 @@ mod tests {
         let mut segs = Vec::new();
         cut_dag(&dict, "你好", 30, &mut segs);
         assert_eq!((segs[0].byte_start, segs[0].byte_end), (30, 36));
+    }
+
+    #[test]
+    fn user_word_auto_freq_beats_current_split() {
+        // 主詞典會把「板南線」切成 板南/線；加入自訂詞（頻率自動推定）後應成一詞。
+        let mut dict = tiny_dict(&[("板南", 100.0, "ns"), ("線", 50.0, "n"), ("搭", 20.0, "v")]);
+        assert_eq!(cut_words(&dict, "搭板南線"), vec!["搭", "板南", "線"]);
+        dict.install_user_dict(&[crate::userdict::UserDictEntry {
+            word: "板南線".into(),
+            freq: None,
+            tag: Some("nt".into()),
+        }])
+        .unwrap();
+        let mut segs = Vec::new();
+        cut_dag(&dict, "搭板南線", 0, &mut segs);
+        let words: Vec<&str> =
+            segs.iter().map(|s| &"搭板南線"[s.byte_start..s.byte_end]).collect();
+        assert_eq!(words, vec!["搭", "板南線"]);
+        // 新詞性 nt 應已擴充進 tag_names，且該詞段回查得到它。
+        let SegKind::Dict(id) = segs[1].kind else { panic!("應為詞典詞") };
+        assert_eq!(dict.tag_names[dict.tag(id) as usize], "nt");
+    }
+
+    #[test]
+    fn user_word_overrides_tag_of_existing_word() {
+        // 同一詞主詞典與自訂詞典皆有時，顯式高頻的自訂詞條應贏得詞性回查。
+        let mut dict = tiny_dict(&[("雲端", 100.0, "n")]);
+        dict.install_user_dict(&[crate::userdict::UserDictEntry {
+            word: "雲端".into(),
+            freq: Some(10000.0),
+            tag: Some("nz".into()),
+        }])
+        .unwrap();
+        let mut segs = Vec::new();
+        cut_dag(&dict, "雲端", 0, &mut segs);
+        let SegKind::Dict(id) = segs[0].kind else { panic!("應為詞典詞") };
+        assert_eq!(dict.tag_names[dict.tag(id) as usize], "nz");
+    }
+
+    #[test]
+    fn user_dict_normalizes_words_like_queries() {
+        // 自訂詞含 ASCII 大寫時應與查詢端同樣正規化（小寫）後才建自動機。
+        let mut dict = tiny_dict(&[("好", 10.0, "a")]);
+        dict.install_user_dict(&[crate::userdict::UserDictEntry {
+            word: "GPT模型".into(),
+            freq: Some(100.0),
+            tag: None,
+        }])
+        .unwrap();
+        assert_eq!(cut_words(&dict, "gpt模型好"), vec!["gpt模型", "好"]);
     }
 }

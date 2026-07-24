@@ -6,8 +6,11 @@
 //! import init, { Segmenter } from "lingxi-wasm";
 //! await init();
 //! const seg = new Segmenter(dictBytes, bmesBytes, posBytes); // Uint8Array
+//! // 或附自訂詞典（jieba 格式文字，每行 `詞 [頻率] [詞性]`）：
+//! const seg2 = new Segmenter(dictBytes, bmesBytes, posBytes, "板南線 nt\n柯文哲 nr");
 //! seg.cut("金管會前主委");                  // -> string[]
 //! seg.tokenize("...");                     // -> [{word, tag, start, end}]，UTF-16 座標
+//! seg.extract_keywords("...", 10);         // -> [{word, weight}]，權重降冪
 //! ```
 
 use serde::Serialize;
@@ -31,17 +34,42 @@ pub struct Segmenter {
 #[wasm_bindgen]
 impl Segmenter {
     /// 以三個資產檔 bytes 建構（dict.bin / hmm_bmes.bin / hmm_pos.bin）。
+    /// `user_dict` 為選用的 jieba 格式自訂詞典全文（每行 `詞 [頻率] [詞性]`）。
     #[wasm_bindgen(constructor)]
-    pub fn new(dict: &[u8], bmes: &[u8], pos: &[u8]) -> Result<Segmenter, JsError> {
+    pub fn new(
+        dict: &[u8],
+        bmes: &[u8],
+        pos: &[u8],
+        user_dict: Option<String>,
+    ) -> Result<Segmenter, JsError> {
         let dict_model =
             lingxi_core::model::decode_asset(dict).map_err(|e| JsError::new(&e.to_string()))?;
         let bmes_model =
             lingxi_core::model::decode_asset(bmes).map_err(|e| JsError::new(&e.to_string()))?;
         let pos_model =
             lingxi_core::model::decode_asset(pos).map_err(|e| JsError::new(&e.to_string()))?;
-        lingxi_core::Segmenter::from_models(dict_model, bmes_model, pos_model)
+        let entries = user_dict
+            .map(|text| lingxi_core::parse_user_dict(&text))
+            .unwrap_or_default();
+        lingxi_core::Segmenter::from_models_with_user_dict(dict_model, bmes_model, pos_model, &entries)
             .map(|inner| Segmenter { inner })
             .map_err(|e| JsError::new(&e.to_string()))
+    }
+
+    /// TextRank 關鍵字抽取 → [{word, weight}]，權重降冪。
+    pub fn extract_keywords(&self, text: &str, top_k: usize) -> Result<JsValue, JsError> {
+        #[derive(Serialize)]
+        struct JsKeyword {
+            word: String,
+            weight: f32,
+        }
+        let out: Vec<JsKeyword> = self
+            .inner
+            .extract_keywords(text, top_k)
+            .into_iter()
+            .map(|k| JsKeyword { word: k.word, weight: k.weight })
+            .collect();
+        serde_wasm_bindgen::to_value(&out).map_err(|e| JsError::new(&e.to_string()))
     }
 
     /// 分詞 → string[]。

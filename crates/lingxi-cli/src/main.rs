@@ -1,15 +1,18 @@
 //! lingxi CLI：逐行讀 stdin 或檔案，輸出分詞結果。
 //!
 //! 用法：
-//!   lingxi [--assets DIR] [--format words|tsv|jsonl] [--sep 分隔符] [FILE...]
+//!   lingxi [--assets DIR] [--user-dict FILE] [--format words|tsv|jsonl]
+//!          [--sep 分隔符] [--keywords N] [FILE...]
 //!
 //! - words（預設）：一行輸入一行輸出，詞以 --sep（預設 "/"）連接，空白詞段略過
 //! - tsv：每詞一行「詞\t詞性」，輸入行之間以空行分隔
 //! - jsonl：每行輸入輸出一行 JSON：{"tokens":[{"w":..,"t":..,"s":..,"e":..}]}
+//! - --keywords N：改為對全部輸入做 TextRank，輸出 N 行「詞\t權重」後結束
+//! - --user-dict：jieba 格式自訂詞典（每行 `詞 [頻率] [詞性]`）
 //!
 //! 資產目錄搜尋順序：--assets → 環境變數 LINGXI_ASSETS → ./assets。
 
-use std::io::{BufRead, BufWriter, Write};
+use std::io::{BufRead, BufWriter, Read, Write};
 use std::time::Instant;
 
 use anyhow::{bail, Context, Result};
@@ -23,24 +26,30 @@ enum Format {
 
 struct Args {
     assets: String,
+    user_dict: Option<String>,
     format: Format,
     sep: String,
     files: Vec<String>,
     stats: bool,
+    /// Some(n) = 關鍵字模式：全部輸入做 TextRank，取前 n 個。
+    keywords: Option<usize>,
 }
 
 fn parse_args() -> Result<Args> {
     let mut args = Args {
         assets: std::env::var("LINGXI_ASSETS").unwrap_or_else(|_| "assets".into()),
+        user_dict: None,
         format: Format::Words,
         sep: "/".into(),
         files: Vec::new(),
         stats: false,
+        keywords: None,
     };
     let mut it = std::env::args().skip(1);
     while let Some(a) = it.next() {
         match a.as_str() {
             "--assets" => args.assets = it.next().context("--assets 需要參數")?,
+            "--user-dict" => args.user_dict = Some(it.next().context("--user-dict 需要參數")?),
             "--sep" => args.sep = it.next().context("--sep 需要參數")?,
             "--format" => {
                 args.format = match it.next().context("--format 需要參數")?.as_str() {
@@ -50,9 +59,14 @@ fn parse_args() -> Result<Args> {
                     other => bail!("未知格式 {other}（可用 words|tsv|jsonl）"),
                 }
             }
+            "--keywords" => {
+                args.keywords = Some(
+                    it.next().context("--keywords 需要參數")?.parse().context("--keywords 需為整數")?,
+                )
+            }
             "--stats" => args.stats = true,
             "--help" | "-h" => {
-                eprintln!("用法: lingxi [--assets DIR] [--format words|tsv|jsonl] [--sep S] [--stats] [FILE...]");
+                eprintln!("用法: lingxi [--assets DIR] [--user-dict FILE] [--format words|tsv|jsonl] [--sep S] [--keywords N] [--stats] [FILE...]");
                 std::process::exit(0);
             }
             _ => args.files.push(a),
@@ -65,12 +79,43 @@ fn main() -> Result<()> {
     let args = parse_args()?;
 
     let t0 = Instant::now();
-    let seg = Segmenter::from_asset_dir(&args.assets)
+    let user_entries = match &args.user_dict {
+        Some(path) => {
+            let text = std::fs::read_to_string(path).with_context(|| format!("讀取自訂詞典 {path}"))?;
+            lingxi_core::parse_user_dict(&text)
+        }
+        None => Vec::new(),
+    };
+    let seg = Segmenter::from_asset_dir_with_user_dict(&args.assets, &user_entries)
         .with_context(|| format!("載入資產目錄 {} 失敗（可用 --assets 或 LINGXI_ASSETS 指定）", args.assets))?;
     let load_ms = t0.elapsed().as_millis();
 
     let stdout = std::io::stdout();
     let mut out = BufWriter::new(stdout.lock());
+
+    // 關鍵字模式：整份輸入一次抽取，與逐行分詞管線互斥。
+    if let Some(top_k) = args.keywords {
+        let mut text = String::new();
+        if args.files.is_empty() {
+            std::io::stdin().lock().read_to_string(&mut text)?;
+        } else {
+            for path in &args.files {
+                text.push_str(
+                    &std::fs::read_to_string(path).with_context(|| format!("讀取 {path}"))?,
+                );
+                text.push('\n');
+            }
+        }
+        for k in seg.extract_keywords(&text, top_k) {
+            writeln!(out, "{}\t{:.4}", k.word, k.weight)?;
+        }
+        out.flush()?;
+        if args.stats {
+            eprintln!("載入 {load_ms} ms; 抽取 {:.2} MB", text.len() as f64 / 1e6);
+        }
+        return Ok(());
+    }
+
     let mut total_bytes = 0usize;
     let t1 = Instant::now();
 

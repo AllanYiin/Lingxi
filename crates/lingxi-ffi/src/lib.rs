@@ -33,13 +33,38 @@ pub struct LingxiTokens {
 /// `dir` 須為有效的 NUL 結尾 UTF-8 路徑字串。
 #[no_mangle]
 pub unsafe extern "C" fn lingxi_new_from_dir(dir: *const c_char) -> *mut LingxiHandle {
+    lingxi_new_from_dir_ex(dir, std::ptr::null(), 0)
+}
+
+/// 從資產目錄建立分詞器並附加自訂詞典；失敗回傳 NULL。
+/// `user_dict_utf8` 為 jieba 格式詞典全文（每行 `詞 [頻率] [詞性]`），
+/// 長度 `user_dict_len` bytes，不需 NUL 結尾；傳 NULL/0 表示無自訂詞典。
+///
+/// # Safety
+/// `dir` 須為有效的 NUL 結尾 UTF-8 路徑字串；
+/// `user_dict_utf8` 非 NULL 時須指向長度至少 `user_dict_len` 的有效緩衝。
+#[no_mangle]
+pub unsafe extern "C" fn lingxi_new_from_dir_ex(
+    dir: *const c_char,
+    user_dict_utf8: *const u8,
+    user_dict_len: usize,
+) -> *mut LingxiHandle {
     if dir.is_null() {
         return std::ptr::null_mut();
     }
     let Ok(dir) = CStr::from_ptr(dir).to_str() else {
         return std::ptr::null_mut();
     };
-    match lingxi_core::Segmenter::from_asset_dir(dir) {
+    let entries = if user_dict_utf8.is_null() || user_dict_len == 0 {
+        Vec::new()
+    } else {
+        let bytes = std::slice::from_raw_parts(user_dict_utf8, user_dict_len);
+        let Ok(text) = std::str::from_utf8(bytes) else {
+            return std::ptr::null_mut();
+        };
+        lingxi_core::parse_user_dict(text)
+    };
+    match lingxi_core::Segmenter::from_asset_dir_with_user_dict(dir, &entries) {
         Ok(seg) => {
             // 詞性表在載入時一次轉為 CString，之後 lingxi_tag_name 零成本。
             let tag_cstrings = (0..=u8::MAX)
@@ -112,6 +137,72 @@ pub unsafe extern "C" fn lingxi_tokens_free(t: *mut LingxiTokens) {
     }
     let tokens = Box::from_raw(t);
     drop(Box::from_raw(std::ptr::slice_from_raw_parts_mut(tokens.items, tokens.count)));
+}
+
+/// 一個關鍵字：NUL 結尾 UTF-8 詞字串（結果持有，隨結果釋放）+ 權重。
+#[repr(C)]
+pub struct LingxiKeyword {
+    pub word: *mut c_char,
+    pub weight: f32,
+}
+
+/// 關鍵字抽取結果：陣列 + 長度。以 lingxi_keywords_free 釋放。
+#[repr(C)]
+pub struct LingxiKeywords {
+    pub count: usize,
+    pub items: *mut LingxiKeyword,
+}
+
+/// TextRank 關鍵字抽取，權重降冪，最多 `top_k` 個。
+/// 非法 UTF-8 或 NULL 參數回傳 NULL。
+///
+/// # Safety
+/// `utf8` 指向長度至少 `len` 的有效緩衝；回傳值以 lingxi_keywords_free 釋放。
+#[no_mangle]
+pub unsafe extern "C" fn lingxi_extract_keywords(
+    h: *const LingxiHandle,
+    utf8: *const u8,
+    len: usize,
+    top_k: usize,
+) -> *mut LingxiKeywords {
+    if h.is_null() || (utf8.is_null() && len > 0) {
+        return std::ptr::null_mut();
+    }
+    let bytes = std::slice::from_raw_parts(utf8, len);
+    let Ok(text) = std::str::from_utf8(bytes) else {
+        return std::ptr::null_mut();
+    };
+    let handle = &*h;
+    let keywords: Vec<LingxiKeyword> = handle
+        .seg
+        .extract_keywords(text, top_k)
+        .into_iter()
+        .map(|k| LingxiKeyword {
+            // 詞來自詞典/正規化文字，不含 NUL；防禦性處理仍以 expect 標明前提。
+            word: CString::new(k.word).expect("關鍵字不含 NUL").into_raw(),
+            weight: k.weight,
+        })
+        .collect();
+    let boxed = keywords.into_boxed_slice();
+    let count = boxed.len();
+    let items = Box::into_raw(boxed) as *mut LingxiKeyword;
+    Box::into_raw(Box::new(LingxiKeywords { count, items }))
+}
+
+/// 釋放關鍵字抽取結果（含每個詞字串）。
+///
+/// # Safety
+/// `k` 須為 lingxi_extract_keywords 回傳且未曾釋放的指標；NULL 為 no-op。
+#[no_mangle]
+pub unsafe extern "C" fn lingxi_keywords_free(k: *mut LingxiKeywords) {
+    if k.is_null() {
+        return;
+    }
+    let keywords = Box::from_raw(k);
+    let items = Box::from_raw(std::ptr::slice_from_raw_parts_mut(keywords.items, keywords.count));
+    for item in items.iter() {
+        drop(CString::from_raw(item.word));
+    }
 }
 
 /// 詞性 id → NUL 結尾名稱字串；id 越界回傳 NULL。

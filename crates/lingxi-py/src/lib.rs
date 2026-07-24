@@ -41,11 +41,35 @@ struct Segmenter {
 #[pymethods]
 impl Segmenter {
     /// 從資產目錄建立（目錄需含 dict.bin / hmm_bmes.bin / hmm_pos.bin）。
+    /// `user_dict` 為 jieba 格式詞條行（`詞 [頻率] [詞性]`）；檔案讀取由
+    /// Python 層包裝（見 __init__.py 的 load()）。
     #[new]
-    fn new(asset_dir: &str) -> PyResult<Self> {
-        lingxi_core::Segmenter::from_asset_dir(asset_dir)
+    #[pyo3(signature = (asset_dir, user_dict=None))]
+    fn new(asset_dir: &str, user_dict: Option<Vec<String>>) -> PyResult<Self> {
+        let entries = user_dict
+            .map(|lines| lingxi_core::parse_user_dict(&lines.join("\n")))
+            .unwrap_or_default();
+        lingxi_core::Segmenter::from_asset_dir_with_user_dict(asset_dir, &entries)
             .map(|inner| Segmenter { inner })
             .map_err(|e| PyValueError::new_err(e.to_string()))
+    }
+
+    /// TextRank 關鍵字抽取 → [(詞, 權重)]，權重降冪。
+    /// `allow_tags` 指定候選詞性白名單；預設為名詞類/動詞/英文詞。
+    #[pyo3(signature = (text, top_k=20, allow_tags=None))]
+    fn extract_keywords(
+        &self,
+        text: &str,
+        top_k: usize,
+        allow_tags: Option<Vec<String>>,
+    ) -> Vec<(String, f32)> {
+        let tag_refs: Option<Vec<&str>> =
+            allow_tags.as_ref().map(|v| v.iter().map(String::as_str).collect());
+        self.inner
+            .extract_keywords_with(text, top_k, tag_refs.as_deref())
+            .into_iter()
+            .map(|k| (k.word, k.weight))
+            .collect()
     }
 
     /// 分詞 → 詞列表。

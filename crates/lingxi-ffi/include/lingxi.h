@@ -1,8 +1,9 @@
 /* LingXi 分詞 C ABI。與 src/lib.rs 手動同步維護。
  *
  * 所有權規則：
- *   - lingxi_new_from_dir 的結果以 lingxi_free 釋放
+ *   - lingxi_new_from_dir / lingxi_new_from_dir_ex 的結果以 lingxi_free 釋放
  *   - lingxi_tokenize 的結果以 lingxi_tokens_free 釋放
+ *   - lingxi_extract_keywords 的結果以 lingxi_keywords_free 釋放
  *   - token 的 byte 區間指回呼叫者的輸入緩衝（零拷貝），緩衝存活期間有效
  *   - lingxi_tag_name 回傳的字串由 handle 持有，呼叫者不得釋放
  * handle 為純函數分詞器，可多執行緒共享。
@@ -30,8 +31,24 @@ typedef struct LingxiTokens {
     LingxiToken *items;
 } LingxiTokens;
 
+typedef struct LingxiKeyword {
+    char *word;   /* NUL 結尾 UTF-8，由結果持有 */
+    float weight; /* TextRank 權重（降冪排列） */
+} LingxiKeyword;
+
+typedef struct LingxiKeywords {
+    size_t count;
+    LingxiKeyword *items;
+} LingxiKeywords;
+
 /* 從資產目錄（含 dict.bin / hmm_bmes.bin / hmm_pos.bin）建立；失敗回 NULL。 */
 LingxiHandle *lingxi_new_from_dir(const char *dir);
+
+/* 同上，並附加自訂詞典：jieba 格式全文（每行「詞 [頻率] [詞性]」），
+ * user_dict_len bytes，不需 NUL 結尾；NULL/0 表示無自訂詞典。 */
+LingxiHandle *lingxi_new_from_dir_ex(const char *dir,
+                                     const uint8_t *user_dict_utf8,
+                                     size_t user_dict_len);
 
 void lingxi_free(LingxiHandle *h);
 
@@ -39,6 +56,13 @@ void lingxi_free(LingxiHandle *h);
 LingxiTokens *lingxi_tokenize(const LingxiHandle *h, const uint8_t *utf8, size_t len);
 
 void lingxi_tokens_free(LingxiTokens *t);
+
+/* TextRank 關鍵字抽取，權重降冪，最多 top_k 個；非法 UTF-8 回 NULL。 */
+LingxiKeywords *lingxi_extract_keywords(const LingxiHandle *h,
+                                        const uint8_t *utf8, size_t len,
+                                        size_t top_k);
+
+void lingxi_keywords_free(LingxiKeywords *k);
 
 /* 詞性 id → NUL 結尾名稱；id 越界回 NULL。 */
 const char *lingxi_tag_name(const LingxiHandle *h, uint8_t tag);
