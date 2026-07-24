@@ -1,0 +1,36 @@
+//! 分詞吞吐量 benchmark：短句 / 段落 / 長文三組。
+//! 需先跑 lingxi-convert 產生 assets（與 real_assets 整合測試同一套）。
+
+use criterion::{criterion_group, criterion_main, Criterion, Throughput};
+use lingxi_core::Segmenter;
+
+const SHORT: &str = "金管會前主委參加台北市政府的記者會"; // ~17 字
+const PARA: &str = "行政院主計總處今天公布最新經濟成長率預測，全年經濟成長率上修至百分之三點二，主因出口表現優於預期，半導體產業受惠人工智慧需求暢旺，帶動相關供應鏈出貨動能強勁。不過內需方面，民間消費成長動能趨緩，房市交易量縮，加上國際地緣政治風險仍高，主計總處提醒下半年不確定性因素仍多。學者分析，台灣經濟結構高度依賴科技產業出口，若終端需求反轉，恐衝擊整體成長表現，建議政府持續推動產業多元化，並強化服務業附加價值，以分散風險。此外勞動市場方面，失業率維持低檔，實質薪資成長仍然有限，物價漲幅雖趨緩但民生必需品價格居高不下，民眾對經濟的實際感受與總體數據之間仍有落差。";
+
+fn bench_segment(c: &mut Criterion) {
+    let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/../../assets");
+    let seg = match Segmenter::from_asset_dir(dir) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("assets 不存在（{e}），先跑 lingxi-convert");
+            return;
+        }
+    };
+    // 長文：段落重覆到約 50KB。
+    let long: String = PARA.repeat(50_000 / PARA.len() + 1);
+
+    let mut group = c.benchmark_group("cut");
+    for (name, text) in [("short_17chars", SHORT), ("para_250chars", PARA), ("long_50kb", long.as_str())] {
+        group.throughput(Throughput::Bytes(text.len() as u64));
+        group.bench_function(name, |b| b.iter(|| seg.cut(std::hint::black_box(text))));
+    }
+    group.finish();
+
+    let mut group = c.benchmark_group("tokenize");
+    group.throughput(Throughput::Bytes(PARA.len() as u64));
+    group.bench_function("para_250chars", |b| b.iter(|| seg.tokenize(std::hint::black_box(PARA))));
+    group.finish();
+}
+
+criterion_group!(benches, bench_segment);
+criterion_main!(benches);

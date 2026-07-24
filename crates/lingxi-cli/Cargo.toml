@@ -1,0 +1,14 @@
+[package]
+name = "lingxi-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "LingXi 分詞 CLI：stdin/檔案 → 分詞或詞性標註輸出"
+
+[[bin]]
+name = "lingxi"
+path = "src/main.rs"
+
+[dependencies]
+lingxi-core = { path = "../lingxi-core" }
+anyhow = { workspace = true }
