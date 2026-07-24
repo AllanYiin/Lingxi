@@ -43,8 +43,8 @@ cargo test --release
 # 3. CLI
 echo "金管會前主委參加記者會" | ./target/release/lingxi --format tsv
 
-# 4. Python wheel（先把 assets/*.bin 複製到 crates/lingxi-py/python/lingxi/assets/）
-cd crates/lingxi-py && maturin build --release
+# 4. Python wheel（自動搬資產＋建置；--convert 可在 assets 缺少時代跑轉換）
+python tools/build_wheel.py
 
 # 5. WASM
 cd crates/lingxi-wasm && wasm-pack build --release --target nodejs
