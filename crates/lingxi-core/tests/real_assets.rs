@@ -33,3 +33,30 @@ fn variant_normalization_still_slices_original() {
     assert_eq!(words.concat(), text);
     assert!(words.iter().any(|w| w.contains('臺')), "實際切分: {words:?}");
 }
+
+#[test]
+fn mixed_text_with_url_email_time() {
+    let Some(seg) = load() else { return };
+    let text = "陳先生2014年3月寄信到service@gmail.com，網址是https://www.ptt.cc/bbs/Gossiping！";
+    let words = seg.cut(text);
+    assert_eq!(words.concat(), text, "詞段必須完整覆蓋原文");
+    assert!(words.contains(&"2014年"), "實際切分: {words:?}");
+    assert!(words.contains(&"service@gmail.com"), "實際切分: {words:?}");
+    assert!(words.contains(&"https://www.ptt.cc/bbs/Gossiping"), "實際切分: {words:?}");
+    assert!(words.contains(&"！"), "實際切分: {words:?}");
+}
+
+#[test]
+fn hmm_merges_oov_name_run() {
+    let Some(seg) = load() else { return };
+    // 未登入人名：HMM 應把連續單字合併成詞（不苛求邊界完全正確，
+    // 但至少不應全部退化為單字）。
+    let text = "警方逮捕了郝翊晟與同夥";
+    let words = seg.cut(text);
+    assert_eq!(words.concat(), text);
+    let name_zone: Vec<&&str> = words.iter().filter(|w| w.contains('郝') || w.contains('翊')).collect();
+    assert!(
+        name_zone.iter().any(|w| w.chars().count() >= 2),
+        "HMM 未合併任何人名字元, 實際切分: {words:?}"
+    );
+}

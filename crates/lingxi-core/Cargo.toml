@@ -10,3 +10,4 @@ daachorse = { workspace = true }
 serde = { workspace = true }
 postcard = { workspace = true }
 xxhash-rust = { workspace = true }
+regex = "1"

@@ -6,8 +6,9 @@
 //! O(邊數 + 字元數)，邊在單次 AC 掃描中產生。
 
 use crate::dict::Dict;
+use crate::segment::{SegKind, Segment};
 
-/// 一條 DAG 邊：從某字元位置起、跨 `char_len` 個字元的候選詞。
+/// 一條 DAG 邊：從某字元位置起的候選詞。
 #[derive(Clone, Copy)]
 struct Edge {
     /// 邊終點的字元位置（exclusive）。
@@ -16,15 +17,6 @@ struct Edge {
     log_prob: f32,
     /// 詞條 id；未登入單字邊為 None。
     word_id: Option<u32>,
-}
-
-/// 切分結果中的一個詞段：輸入字串的 byte 區間 + 詞條 id（若為詞典詞）。
-#[derive(Clone, Copy, Debug)]
-pub struct Segment {
-    pub byte_start: usize,
-    pub byte_end: usize,
-    /// Some(id) = 詞典詞；None = 未登入單字（後續交給 HMM 合併重切）。
-    pub word_id: Option<u32>,
 }
 
 /// 對一段連續文字做 DAG+DP 切分，結果 push 進 `out`。
@@ -45,7 +37,11 @@ pub fn cut_dag(dict: &Dict, chunk: &str, byte_base: usize, out: &mut Vec<Segment
     // 單字元 chunk 直接輸出，省去建 DAG。
     if n == 1 {
         let word_id = dict.matches(chunk).find(|m| m.byte_end == chunk.len()).map(|m| m.word_id);
-        out.push(Segment { byte_start: byte_base, byte_end: byte_base + chunk.len(), word_id });
+        out.push(Segment {
+            byte_start: byte_base,
+            byte_end: byte_base + chunk.len(),
+            kind: word_id.map_or(SegKind::Oov, SegKind::Dict),
+        });
         return;
     }
 
@@ -103,7 +99,7 @@ pub fn cut_dag(dict: &Dict, chunk: &str, byte_base: usize, out: &mut Vec<Segment
         out.push(Segment {
             byte_start: byte_base + boundaries[i] as usize,
             byte_end: byte_base + boundaries[end] as usize,
-            word_id,
+            kind: word_id.map_or(SegKind::Oov, SegKind::Dict),
         });
         i = end;
     }
@@ -180,14 +176,14 @@ mod tests {
 
     #[test]
     fn oov_chars_fall_back_to_single() {
-        // 詞典完全沒有的字應逐字輸出且 word_id = None。
+        // 詞典完全沒有的字應逐字輸出且 kind 為 Oov。
         let dict = tiny_dict(&[("你好", 10.0, "l")]);
         let mut segs = Vec::new();
         cut_dag(&dict, "你好嗎", 0, &mut segs);
         let words: Vec<&str> = segs.iter().map(|s| &"你好嗎"[s.byte_start..s.byte_end]).collect();
         assert_eq!(words, vec!["你好", "嗎"]);
-        assert!(segs[0].word_id.is_some());
-        assert!(segs[1].word_id.is_none());
+        assert!(matches!(segs[0].kind, SegKind::Dict(_)));
+        assert_eq!(segs[1].kind, SegKind::Oov);
     }
 
     #[test]
