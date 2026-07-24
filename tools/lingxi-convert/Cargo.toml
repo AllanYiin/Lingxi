@@ -1,0 +1,12 @@
+[package]
+name = "lingxi-convert"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "一次性離線工具：舊版 LingXi JSON 模型 → postcard 二進位資產"
+
+[dependencies]
+lingxi-core = { path = "../../crates/lingxi-core" }
+daachorse = { workspace = true }
+serde_json = { workspace = true }
+anyhow = { workspace = true }

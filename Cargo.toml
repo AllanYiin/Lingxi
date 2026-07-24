@@ -1,0 +1,23 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/lingxi-core",
+    "tools/lingxi-convert",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+
+[workspace.dependencies]
+daachorse = "1"
+serde = { version = "1", features = ["derive"] }
+postcard = { version = "1", features = ["use-std"] }
+serde_json = "1"
+xxhash-rust = { version = "0.8", features = ["xxh3"] }
+anyhow = "1"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
