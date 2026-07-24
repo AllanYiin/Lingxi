@@ -47,6 +47,38 @@ fn mixed_text_with_url_email_time() {
 }
 
 #[test]
+fn tokenize_assigns_reasonable_tags() {
+    let Some(seg) = load() else { return };
+    let text = "陳先生2014年寄信到service@gmail.com！";
+    let tokens = seg.tokenize(text);
+    let tagged: Vec<(&str, &str)> = tokens
+        .iter()
+        .map(|t| (&text[t.byte_start..t.byte_end], seg.tag_name(t.tag)))
+        .collect();
+    let tag_of = |w: &str| tagged.iter().find(|(x, _)| *x == w).map(|(_, t)| *t);
+    assert_eq!(tag_of("2014年"), Some("t"), "全部: {tagged:?}");
+    assert_eq!(tag_of("service@gmail.com"), Some("email"), "全部: {tagged:?}");
+    assert_eq!(tag_of("！"), Some("w"), "全部: {tagged:?}");
+    // 「陳先生」被 HMM 合併為人名，POS Viterbi 應標為 nr。
+    assert_eq!(tag_of("陳先生"), Some("nr"), "全部: {tagged:?}");
+}
+
+#[test]
+fn oov_word_gets_pos_from_viterbi() {
+    let Some(seg) = load() else { return };
+    // 郝翊晟 為未登入人名，POS Viterbi 應給出詞性（理想為 nr，至少不能是 unknown 以外的空值）。
+    let text = "警方逮捕了郝翊晟";
+    let tokens = seg.tokenize(text);
+    let tagged: Vec<(&str, &str)> = tokens
+        .iter()
+        .map(|t| (&text[t.byte_start..t.byte_end], seg.tag_name(t.tag)))
+        .collect();
+    let name = tagged.iter().find(|(w, _)| w.contains('郝'));
+    assert!(name.is_some(), "全部: {tagged:?}");
+    println!("OOV 詞性結果: {tagged:?}");
+}
+
+#[test]
 fn hmm_merges_oov_name_run() {
     let Some(seg) = load() else { return };
     // 未登入人名：HMM 應把連續單字合併成詞（不苛求邊界完全正確，

@@ -8,6 +8,7 @@ pub mod dag;
 pub mod dict;
 pub mod hmm;
 pub mod model;
+pub mod pos;
 pub mod segment;
 
 use std::path::Path;
@@ -16,10 +17,40 @@ use chunk::ChunkKind;
 use dict::Dict;
 pub use segment::{SegKind, Segment};
 
+/// 帶詞性的分詞結果：原始輸入的 byte 區間 + 統一詞性表的 tag id。
+/// 詞字串由呼叫端以 `&text[byte_start..byte_end]` 取得（零拷貝），
+/// 詞性名稱以 `Segmenter::tag_name(tag)` 解析。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Token {
+    pub byte_start: usize,
+    pub byte_end: usize,
+    pub tag: u8,
+}
+
+/// 非中文詞段的內建詞性 id（統一詞性表索引）。
+struct BuiltinTags {
+    url: u8,
+    email: u8,
+    eng: u8,
+    num: u8,   // "m"
+    time: u8,  // "t"
+    punct: u8, // "w"
+    other: u8, // "x"（空白與其他符號共用）
+    unknown: u8,
+}
+
 /// 分詞器：載入一次、多執行緒共享（`Send + Sync`，內部無可變狀態）。
 pub struct Segmenter {
     dict: Dict,
     bmes: model::BmesModel,
+    pos: model::PosModel,
+    /// 統一詞性名稱表：合併詞典詞性、POS 模型詞性與內建詞性。
+    tags: Vec<String>,
+    /// 詞典 tag id → 統一 tag id。
+    dict_tag_map: Vec<u8>,
+    /// POS 模型 tag id → 統一 tag id。
+    pos_tag_map: Vec<u8>,
+    builtin: BuiltinTags,
 }
 
 /// 模型載入錯誤。
@@ -47,13 +78,55 @@ fn load_asset<T: serde::de::DeserializeOwned>(path: &Path) -> Result<T, LoadErro
 }
 
 impl Segmenter {
-    /// 從資產目錄載入（需含 dict.bin 與 hmm_bmes.bin）。
+    /// 從資產目錄載入（需含 dict.bin、hmm_bmes.bin、hmm_pos.bin）。
     pub fn from_asset_dir(dir: impl AsRef<Path>) -> Result<Self, LoadError> {
         let dir = dir.as_ref();
-        Ok(Segmenter {
-            dict: Dict::from_model(load_asset(&dir.join("dict.bin"))?),
-            bmes: load_asset(&dir.join("hmm_bmes.bin"))?,
-        })
+        Self::from_models(
+            load_asset(&dir.join("dict.bin"))?,
+            load_asset(&dir.join("hmm_bmes.bin"))?,
+            load_asset(&dir.join("hmm_pos.bin"))?,
+        )
+    }
+
+    /// 由已解碼的模型組裝（bindings 內嵌模型時的入口）。
+    pub fn from_models(
+        dict_model: model::DictModel,
+        bmes: model::BmesModel,
+        pos: model::PosModel,
+    ) -> Result<Self, LoadError> {
+        let dict = Dict::from_model(dict_model);
+
+        // 統一詞性表：字串為對齊介面，重複名稱共用同一 id。
+        let mut tags: Vec<String> = Vec::new();
+        let mut intern = |name: &str, tags: &mut Vec<String>| -> u8 {
+            match tags.iter().position(|t| t == name) {
+                Some(i) => i as u8,
+                None => {
+                    tags.push(name.to_string());
+                    (tags.len() - 1) as u8
+                }
+            }
+        };
+        let dict_tag_map: Vec<u8> =
+            dict.tag_names.iter().map(|t| intern(t, &mut tags)).collect();
+        let pos_tag_map: Vec<u8> = pos.tag_names.iter().map(|t| intern(t, &mut tags)).collect();
+        let builtin = BuiltinTags {
+            url: intern("url", &mut tags),
+            email: intern("email", &mut tags),
+            eng: intern("eng", &mut tags),
+            num: intern("m", &mut tags),
+            time: intern("t", &mut tags),
+            punct: intern("w", &mut tags),
+            other: intern("x", &mut tags),
+            unknown: intern("unknown", &mut tags),
+        };
+
+        Ok(Segmenter { dict, bmes, pos, tags, dict_tag_map, pos_tag_map, builtin })
+    }
+
+    /// 統一詞性表：tag id → 名稱。
+    pub fn tag_name(&self, tag: u8) -> &str {
+        &self.tags[tag as usize]
     }
 
     /// 分詞：回傳借用輸入的詞切片序列（零拷貝）。
@@ -68,10 +141,28 @@ impl Segmenter {
     /// 分詞：回傳帶 byte 區間與種類的詞段。
     pub fn cut_segments(&self, text: &str) -> Vec<Segment> {
         let normalized = self.dict.normalize(text);
-        let mut chunks = Vec::new();
-        chunk::split(&normalized, &mut chunks);
+        self.cut_normalized(&normalized)
+    }
 
-        let mut out = Vec::with_capacity(text.len() / 4);
+    /// 分詞＋詞性標註。
+    pub fn tokenize(&self, text: &str) -> Vec<Token> {
+        let normalized = self.dict.normalize(text);
+        self.cut_normalized(&normalized)
+            .into_iter()
+            .map(|s| Token {
+                byte_start: s.byte_start,
+                byte_end: s.byte_end,
+                tag: self.tag_of(&normalized, &s),
+            })
+            .collect()
+    }
+
+    /// 主管線（輸入須已正規化）。
+    fn cut_normalized(&self, normalized: &str) -> Vec<Segment> {
+        let mut chunks = Vec::new();
+        chunk::split(normalized, &mut chunks);
+
+        let mut out = Vec::with_capacity(normalized.len() / 4);
         let mut scratch: Vec<Segment> = Vec::new();
         for ch in &chunks {
             match ch.kind {
@@ -83,7 +174,7 @@ impl Segmenter {
                         ch.byte_start,
                         &mut scratch,
                     );
-                    self.merge_oov_runs(&normalized, &scratch, &mut out);
+                    self.merge_oov_runs(normalized, &scratch, &mut out);
                 }
                 kind => out.push(Segment {
                     byte_start: ch.byte_start,
@@ -93,6 +184,26 @@ impl Segmenter {
             }
         }
         out
+    }
+
+    /// 詞段 → 統一詞性 id。
+    fn tag_of(&self, normalized: &str, seg: &Segment) -> u8 {
+        match seg.kind {
+            SegKind::Dict(id) => self.dict_tag_map[self.dict.tag(id) as usize],
+            SegKind::Oov => {
+                let word = &normalized[seg.byte_start..seg.byte_end];
+                pos::tag_oov(&self.pos, word)
+                    .map(|t| self.pos_tag_map[t as usize])
+                    .unwrap_or(self.builtin.unknown)
+            }
+            SegKind::Url => self.builtin.url,
+            SegKind::Email => self.builtin.email,
+            SegKind::Eng => self.builtin.eng,
+            SegKind::Num => self.builtin.num,
+            SegKind::Time => self.builtin.time,
+            SegKind::Punct => self.builtin.punct,
+            SegKind::Space | SegKind::Other => self.builtin.other,
+        }
     }
 
     /// 對 DAG 輸出做 jieba 式未登入詞合併：連續 ≥2 個單字詞段
