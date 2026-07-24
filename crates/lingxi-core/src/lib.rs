@@ -129,6 +129,11 @@ impl Segmenter {
         &self.tags[tag as usize]
     }
 
+    /// 同 tag_name，id 越界回傳 None（FFI 層列舉詞性表用）。
+    pub fn try_tag_name(&self, tag: u8) -> Option<&str> {
+        self.tags.get(tag as usize).map(String::as_str)
+    }
+
     /// 分詞：回傳借用輸入的詞切片序列（零拷貝）。
     /// 空白、標點等一律保留為獨立詞段，由呼叫端自行過濾。
     pub fn cut<'a>(&self, text: &'a str) -> Vec<&'a str> {

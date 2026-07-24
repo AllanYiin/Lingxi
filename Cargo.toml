@@ -4,6 +4,8 @@ members = [
     "crates/lingxi-core",
     "crates/lingxi-cli",
     "crates/lingxi-py",
+    "crates/lingxi-wasm",
+    "crates/lingxi-ffi",
     "tools/lingxi-convert",
 ]
 

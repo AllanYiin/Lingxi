@@ -1,0 +1,13 @@
+[package]
+name = "lingxi-ffi"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "LingXi 分詞的 C ABI 共享庫（.dll/.so/.dylib + 靜態庫）"
+
+[lib]
+name = "lingxi_ffi"
+crate-type = ["cdylib", "staticlib"]
+
+[dependencies]
+lingxi-core = { path = "../lingxi-core" }

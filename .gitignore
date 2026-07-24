@@ -2,3 +2,4 @@
 assets/*.bin
 Cargo.lock
 crates/lingxi-py/python/lingxi/assets/
+crates/lingxi-wasm/pkg/
