@@ -75,8 +75,8 @@ impl Segmenter {
         let mut cooc: HashMap<(usize, usize), f32> = HashMap::new();
         for i in 0..cand.len() {
             let Some(a) = cand[i] else { continue };
-            for j in (i + 1)..(i + SPAN).min(cand.len()) {
-                let Some(b) = cand[j] else { continue };
+            for &candidate in cand.iter().take((i + SPAN).min(cand.len())).skip(i + 1) {
+                let Some(b) = candidate else { continue };
                 *cooc.entry((a, b)).or_default() += 1.0;
             }
         }

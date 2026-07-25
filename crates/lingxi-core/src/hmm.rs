@@ -59,7 +59,7 @@ pub fn viterbi_cut(m: &BmesModel, run: &str, byte_base: usize, out: &mut Vec<Seg
         let mut next = [NEG; 16];
         let mut bp = [0u8; 16];
         for s1 in 0..4 {
-            for s2 in 0..4 {
+            for (s2, &emission) in e2_i[s1].iter().enumerate() {
                 let mut best = NEG;
                 let mut best_s0 = 0u8;
                 for s0 in 0..4 {
@@ -70,7 +70,7 @@ pub fn viterbi_cut(m: &BmesModel, run: &str, byte_base: usize, out: &mut Vec<Seg
                     }
                 }
                 let idx = s1 * 4 + s2;
-                next[idx] = best + e2_i[s1][s2];
+                next[idx] = best + emission;
                 bp[idx] = best_s0;
             }
         }
@@ -147,9 +147,7 @@ mod tests {
         trans1[3][3] = -0.7; // S→S
         // 二階轉移：與一階同構（僅取決於 prev1→cur）。
         let mut trans2 = [[[MIN_LOG; 4]; 4]; 4];
-        for p2 in 0..4 {
-            trans2[p2] = trans1;
-        }
+        trans2.fill(trans1);
         let n_chars = chars.chars.len();
         // 發射：甲偏 B、乙偏 E；丙丁偏 S。
         let mut emit1 = vec![[-3.0f32; 4]; n_chars];
@@ -159,9 +157,8 @@ mod tests {
         emit1[idx('乙')][2] = -0.1; // 乙 as E
         emit1[idx('丙')][3] = -0.1; // 丙 as S
         emit1[idx('丁')][3] = -0.1; // 丁 as S
-        for pc in [idx('乙')] {
-            emit2[pc][0][2] = -0.1; // prev=B, cur=E 時發射乙
-        }
+        let pc = idx('乙');
+        emit2[pc][0][2] = -0.1; // prev=B, cur=E 時發射乙
         for pc in [idx('丁'), idx('丙')] {
             emit2[pc][3][3] = -0.1; // prev=S, cur=S
             emit2[pc][2][3] = -0.1; // prev=E, cur=S

@@ -39,6 +39,24 @@ fn user_dict_does_not_disturb_unrelated_text() {
 }
 
 #[test]
+fn mixed_script_words_work_in_main_and_user_dicts() {
+    let entries = parse_user_dict("COVID疫苗 100000 n\n3D列印 100000 n\nCheryl姐 100000 nr\n");
+    let Ok(seg) = Segmenter::from_asset_dir_with_user_dict(ASSET_DIR, &entries) else {
+        eprintln!("assets 不存在，跳過");
+        return;
+    };
+    let text = "看AV女優用PDF檔，COVID疫苗配合3D列印，Cheryl姐來了";
+    let words = seg.cut(text);
+    for expected in ["AV女優", "PDF檔", "COVID疫苗", "3D列印", "Cheryl姐"] {
+        assert!(
+            words.contains(&expected),
+            "缺「{expected}」，實際: {words:?}"
+        );
+    }
+    assert_eq!(words.concat(), text);
+}
+
+#[test]
 fn textrank_extracts_reasonable_keywords() {
     let Ok(seg) = Segmenter::from_asset_dir(ASSET_DIR) else {
         eprintln!("assets 不存在，跳過");
@@ -60,7 +78,10 @@ fn textrank_extracts_reasonable_keywords() {
         "「預算」相關詞應入榜，實際: {words:?}"
     );
     // 候選過濾：不應出現單字詞或標點。
-    assert!(words.iter().all(|w| w.chars().count() >= 2), "出現單字詞: {words:?}");
+    assert!(
+        words.iter().all(|w| w.chars().count() >= 2),
+        "出現單字詞: {words:?}"
+    );
 }
 
 #[test]

@@ -406,7 +406,7 @@ fn convert_pos(resources: &Path) -> Result<PosModel> {
     let mut emit_states: Vec<u16> = Vec::new();
     let mut emit_logps: Vec<f32> = Vec::new();
     emit_offsets.push(0);
-    for (_, row) in &per_char {
+    for row in per_char.values() {
         for (&s, &p) in row {
             emit_states.push(s);
             emit_logps.push(p);

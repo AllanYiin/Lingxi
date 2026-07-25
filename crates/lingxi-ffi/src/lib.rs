@@ -6,6 +6,20 @@
 
 use std::ffi::{c_char, CStr, CString};
 
+/// 將 C 端的 `(ptr, len)` 轉為 UTF-8。空輸入允許 NULL；非空輸入必須非 NULL。
+///
+/// # Safety
+/// 非 NULL 時，`ptr` 必須指向至少 `len` bytes 的有效記憶體。
+unsafe fn utf8_from_raw<'a>(ptr: *const u8, len: usize) -> Option<&'a str> {
+    if len == 0 {
+        return Some("");
+    }
+    if ptr.is_null() {
+        return None;
+    }
+    std::str::from_utf8(std::slice::from_raw_parts(ptr, len)).ok()
+}
+
 /// 不透明 handle：分詞器 + 預先做好 NUL 結尾的詞性名稱表。
 pub struct LingxiHandle {
     seg: lingxi_core::Segmenter,
@@ -102,11 +116,10 @@ pub unsafe extern "C" fn lingxi_tokenize(
     utf8: *const u8,
     len: usize,
 ) -> *mut LingxiTokens {
-    if h.is_null() || (utf8.is_null() && len > 0) {
+    if h.is_null() {
         return std::ptr::null_mut();
     }
-    let bytes = std::slice::from_raw_parts(utf8, len);
-    let Ok(text) = std::str::from_utf8(bytes) else {
+    let Some(text) = utf8_from_raw(utf8, len) else {
         return std::ptr::null_mut();
     };
     let handle = &*h;
@@ -136,7 +149,10 @@ pub unsafe extern "C" fn lingxi_tokens_free(t: *mut LingxiTokens) {
         return;
     }
     let tokens = Box::from_raw(t);
-    drop(Box::from_raw(std::ptr::slice_from_raw_parts_mut(tokens.items, tokens.count)));
+    drop(Box::from_raw(std::ptr::slice_from_raw_parts_mut(
+        tokens.items,
+        tokens.count,
+    )));
 }
 
 /// 一個關鍵字：NUL 結尾 UTF-8 詞字串（結果持有，隨結果釋放）+ 權重。
@@ -165,11 +181,10 @@ pub unsafe extern "C" fn lingxi_extract_keywords(
     len: usize,
     top_k: usize,
 ) -> *mut LingxiKeywords {
-    if h.is_null() || (utf8.is_null() && len > 0) {
+    if h.is_null() {
         return std::ptr::null_mut();
     }
-    let bytes = std::slice::from_raw_parts(utf8, len);
-    let Ok(text) = std::str::from_utf8(bytes) else {
+    let Some(text) = utf8_from_raw(utf8, len) else {
         return std::ptr::null_mut();
     };
     let handle = &*h;
@@ -199,7 +214,10 @@ pub unsafe extern "C" fn lingxi_keywords_free(k: *mut LingxiKeywords) {
         return;
     }
     let keywords = Box::from_raw(k);
-    let items = Box::from_raw(std::ptr::slice_from_raw_parts_mut(keywords.items, keywords.count));
+    let items = Box::from_raw(std::ptr::slice_from_raw_parts_mut(
+        keywords.items,
+        keywords.count,
+    ));
     for item in items.iter() {
         drop(CString::from_raw(item.word));
     }
@@ -219,5 +237,18 @@ pub unsafe extern "C" fn lingxi_tag_name(h: *const LingxiHandle, tag: u8) -> *co
     match handle.tag_cstrings.get(tag as usize) {
         Some(s) => s.as_ptr(),
         None => std::ptr::null(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn null_pointer_is_valid_only_for_empty_input() {
+        unsafe {
+            assert_eq!(utf8_from_raw(std::ptr::null(), 0), Some(""));
+            assert_eq!(utf8_from_raw(std::ptr::null(), 1), None);
+        }
     }
 }

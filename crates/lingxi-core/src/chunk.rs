@@ -35,7 +35,7 @@ pub struct Chunk {
 /// Email 樣式（改寫自舊版 Constants.RegexEmail，去除 .NET (?n:) 模式）。
 static EMAIL_RE: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(
-        r"(?i)[a-z0-9_\-.]+@(\[[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.|([a-z0-9\-]+\.)+)([a-z]{2,4}|[0-9]{1,3})\]?",
+        r"(?i)[a-z0-9_\-.]+@(\[[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.|([a-z0-9\-]+\.)+)([a-z][a-z0-9\-]{1,62}|[0-9]{1,3})\]?",
     )
     .unwrap()
 });
@@ -46,7 +46,7 @@ static URL_RE: LazyLock<Regex> = LazyLock::new(|| {
         r"(?i)(https?://|ftps?://)?",
         r"(([0-9a-z_!~*'().&=+$%\-]+: )?[0-9a-z_!~*'().&=+$%\-]+@)?",
         r"(([0-9]{1,3}\.){3}[0-9]{1,3}",
-        r"|([0-9a-z_!~*'()\-]+\.)*([0-9a-z][0-9a-z\-]{0,61})?[0-9a-z]\.[a-z]{2,6})",
+        r"|([0-9a-z_!~*'()\-]+\.)*([0-9a-z][0-9a-z\-]{0,61})?[0-9a-z]\.[a-z][a-z0-9\-]{1,62})",
         r"(:[0-9]{1,4})?",
         r"(/[0-9a-z_!~*'().;?:@&=+$,%#\-]+)*/?",
     ))
@@ -83,6 +83,13 @@ fn char_class(c: char) -> CharClass {
     }
 }
 
+/// 是否屬於目前分詞管線視為 Han 的字元。
+///
+/// 除了預切塊本身，主管線也用它辨識跨 ASCII/Han 的詞典詞。
+pub(crate) fn is_han_char(c: char) -> bool {
+    char_class(c) == CharClass::Han
+}
+
 /// 時間詞後綴單位（舊版 RegexTime 的 [年月日號]）。
 fn is_time_unit(c: char) -> bool {
     matches!(c, '年' | '月' | '日' | '號')
@@ -105,7 +112,9 @@ pub fn split(text: &str, out: &mut Vec<Chunk>) {
         if text.bytes().any(|b| b == b'.') {
             for m in URL_RE.find_iter(text) {
                 // 與 email 重疊者略過；長度 < 4 的裸匹配（如 "a.b"）不視為網址。
-                let overlaps = protected.iter().any(|&(s, e, _)| m.start() < e && s < m.end());
+                let overlaps = protected
+                    .iter()
+                    .any(|&(s, e, _)| m.start() < e && s < m.end());
                 if !overlaps && m.end() - m.start() >= 4 {
                     protected.push((m.start(), m.end(), ChunkKind::Url));
                 }
@@ -120,7 +129,11 @@ pub fn split(text: &str, out: &mut Vec<Chunk>) {
         if cursor < s {
             scan_plain(&text[cursor..s], cursor, out);
         }
-        out.push(Chunk { byte_start: s, byte_end: e, kind });
+        out.push(Chunk {
+            byte_start: s,
+            byte_end: e,
+            kind,
+        });
         cursor = e;
     }
     if cursor < text.len() {
@@ -133,7 +146,13 @@ fn scan_plain(text: &str, base: usize, out: &mut Vec<Chunk>) {
     let chars: Vec<(usize, char)> = text.char_indices().collect();
     let n = chars.len();
     // 第 i 個字元的結束 byte 位置。
-    let end_of = |i: usize| if i + 1 < n { chars[i + 1].0 } else { text.len() };
+    let end_of = |i: usize| {
+        if i + 1 < n {
+            chars[i + 1].0
+        } else {
+            text.len()
+        }
+    };
 
     let mut i = 0usize;
     while i < n {
@@ -196,8 +215,16 @@ fn scan_plain(text: &str, base: usize, out: &mut Vec<Chunk>) {
                 while j < n && char_class(chars[j].1) == class {
                     j += 1;
                 }
-                let kind = if class == CharClass::Space { ChunkKind::Space } else { ChunkKind::Other };
-                out.push(Chunk { byte_start: base + start_byte, byte_end: base + end_of(j - 1), kind });
+                let kind = if class == CharClass::Space {
+                    ChunkKind::Space
+                } else {
+                    ChunkKind::Other
+                };
+                out.push(Chunk {
+                    byte_start: base + start_byte,
+                    byte_end: base + end_of(j - 1),
+                    kind,
+                });
                 i = j;
             }
             CharClass::Punct => {
@@ -233,8 +260,27 @@ mod tests {
     #[test]
     fn extracts_url_and_email() {
         let r = kinds_and_texts("請寄到test@example.com或上https://www.ptt.cc/bbs查詢");
-        assert!(r.contains(&(ChunkKind::Email, "test@example.com".into())), "{r:?}");
-        assert!(r.contains(&(ChunkKind::Url, "https://www.ptt.cc/bbs".into())), "{r:?}");
+        assert!(
+            r.contains(&(ChunkKind::Email, "test@example.com".into())),
+            "{r:?}"
+        );
+        assert!(
+            r.contains(&(ChunkKind::Url, "https://www.ptt.cc/bbs".into())),
+            "{r:?}"
+        );
+    }
+
+    #[test]
+    fn supports_long_modern_tlds() {
+        let r = kinds_and_texts("寄到a@example.technology或看https://example.technology/path");
+        assert!(
+            r.contains(&(ChunkKind::Email, "a@example.technology".into())),
+            "{r:?}"
+        );
+        assert!(
+            r.contains(&(ChunkKind::Url, "https://example.technology/path".into())),
+            "{r:?}"
+        );
     }
 
     #[test]
@@ -259,7 +305,10 @@ mod tests {
         }
         assert_eq!(cursor, text.len());
         let r = kinds_and_texts(text);
-        assert!(r.contains(&(ChunkKind::Han, "台北的天氣真好".into())), "{r:?}");
+        assert!(
+            r.contains(&(ChunkKind::Han, "台北的天氣真好".into())),
+            "{r:?}"
+        );
         assert!(r.contains(&(ChunkKind::Punct, "！！！".into())), "{r:?}");
         assert!(r.contains(&(ChunkKind::Eng, "hello".into())), "{r:?}");
     }

@@ -18,6 +18,12 @@ pub fn tag_oov(m: &PosModel, word: &str) -> Option<u8> {
     if n == 0 {
         return None;
     }
+    if !chars
+        .iter()
+        .any(|&c| m.emit_row(c).is_some_and(|(states, _)| !states.is_empty()))
+    {
+        return None;
+    }
 
     // 位置 i 應有的 BMES 型態。
     let bmes_at = |i: usize| -> usize {
@@ -88,4 +94,27 @@ pub fn tag_oov(m: &PosModel, word: &str) -> Option<u8> {
         .map(|&(s, _)| (s, score[s as usize]))
         .max_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal))?;
     Some(m.state_tags[best_state as usize])
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::model::CharTable;
+
+    #[test]
+    fn completely_unseen_word_has_no_pos_evidence() {
+        let model = PosModel {
+            state_names: vec!["S-n".into()],
+            state_bmes: vec![STATE_S as u8],
+            state_tags: vec![0],
+            tag_names: vec!["n".into()],
+            start: vec![0.0],
+            trans: vec![0.0],
+            chars: CharTable { chars: vec![] },
+            emit_offsets: vec![0],
+            emit_states: vec![],
+            emit_logps: vec![],
+        };
+        assert_eq!(tag_oov(&model, "㐀"), None);
+    }
 }

@@ -63,6 +63,7 @@ pub enum LoadError {
     Io(std::io::Error),
     Asset(model::AssetError),
     UserDict(String),
+    TooManyTags(usize),
 }
 
 impl std::fmt::Display for LoadError {
@@ -71,6 +72,9 @@ impl std::fmt::Display for LoadError {
             LoadError::Io(e) => write!(f, "讀取模型檔失敗: {e}"),
             LoadError::Asset(e) => write!(f, "{e}"),
             LoadError::UserDict(e) => write!(f, "載入自訂詞典失敗: {e}"),
+            LoadError::TooManyTags(n) => {
+                write!(f, "統一詞性表共有 {n} 種，超過 u8 可表示的 256 種")
+            }
         }
     }
 }
@@ -121,34 +125,41 @@ impl Segmenter {
         user_entries: &[UserDictEntry],
     ) -> Result<Self, LoadError> {
         let mut dict = Dict::from_model(dict_model);
-        dict.install_user_dict(user_entries).map_err(LoadError::UserDict)?;
+        dict.install_user_dict(user_entries)
+            .map_err(LoadError::UserDict)?;
 
         // 統一詞性表：字串為對齊介面，重複名稱共用同一 id。
         let mut tags: Vec<String> = Vec::new();
-        let intern = |name: &str, tags: &mut Vec<String>| -> u8 {
-            match tags.iter().position(|t| t == name) {
-                Some(i) => i as u8,
-                None => {
-                    tags.push(name.to_string());
-                    (tags.len() - 1) as u8
-                }
-            }
-        };
-        let dict_tag_map: Vec<u8> =
-            dict.tag_names.iter().map(|t| intern(t, &mut tags)).collect();
-        let pos_tag_map: Vec<u8> = pos.tag_names.iter().map(|t| intern(t, &mut tags)).collect();
+        let dict_tag_map: Vec<u8> = dict
+            .tag_names
+            .iter()
+            .map(|t| intern_tag(t, &mut tags))
+            .collect::<Result<_, _>>()?;
+        let pos_tag_map: Vec<u8> = pos
+            .tag_names
+            .iter()
+            .map(|t| intern_tag(t, &mut tags))
+            .collect::<Result<_, _>>()?;
         let builtin = BuiltinTags {
-            url: intern("url", &mut tags),
-            email: intern("email", &mut tags),
-            eng: intern("eng", &mut tags),
-            num: intern("m", &mut tags),
-            time: intern("t", &mut tags),
-            punct: intern("w", &mut tags),
-            other: intern("x", &mut tags),
-            unknown: intern("unknown", &mut tags),
+            url: intern_tag("url", &mut tags)?,
+            email: intern_tag("email", &mut tags)?,
+            eng: intern_tag("eng", &mut tags)?,
+            num: intern_tag("m", &mut tags)?,
+            time: intern_tag("t", &mut tags)?,
+            punct: intern_tag("w", &mut tags)?,
+            other: intern_tag("x", &mut tags)?,
+            unknown: intern_tag("unknown", &mut tags)?,
         };
 
-        Ok(Segmenter { dict, bmes, pos, tags, dict_tag_map, pos_tag_map, builtin })
+        Ok(Segmenter {
+            dict,
+            bmes,
+            pos,
+            tags,
+            dict_tag_map,
+            pos_tag_map,
+            builtin,
+        })
     }
 
     /// 統一詞性表：tag id → 名稱。
@@ -191,31 +202,115 @@ impl Segmenter {
 
     /// 主管線（輸入須已正規化）。
     fn cut_normalized(&self, normalized: &str) -> Vec<Segment> {
-        let mut chunks = Vec::new();
-        chunk::split(normalized, &mut chunks);
-
         let mut out = Vec::with_capacity(normalized.len() / 4);
+        let mut chunks = Vec::new();
         let mut scratch: Vec<Segment> = Vec::new();
-        for ch in &chunks {
+
+        // 一般預切塊會把 ASCII/數字與 Han 分開；先保護真正跨邊界的詞典詞，
+        // 讓「AV女優」「90後」與同類 userdict 詞條仍可命中。其餘區段維持
+        // 原本 chunk → DAG → HMM 管線，避免把任意英中混合文字送進中文 HMM。
+        let anchors = self.mixed_dict_anchors(normalized);
+        let mut cursor = 0usize;
+        for anchor in anchors {
+            self.cut_range(
+                normalized,
+                cursor,
+                anchor.byte_start,
+                &mut chunks,
+                &mut scratch,
+                &mut out,
+            );
+            out.push(anchor);
+            cursor = anchor.byte_end;
+        }
+        self.cut_range(
+            normalized,
+            cursor,
+            normalized.len(),
+            &mut chunks,
+            &mut scratch,
+            &mut out,
+        );
+        out
+    }
+
+    /// 找出跨 ASCII/Han 邊界的詞典詞，採左至右最長匹配並以機率破同長平手。
+    fn mixed_dict_anchors(&self, normalized: &str) -> Vec<Segment> {
+        let mut candidates: Vec<(usize, usize, u32, f32)> = self
+            .dict
+            .matches(normalized)
+            .filter_map(|m| {
+                let word = &normalized[m.byte_start..m.byte_end];
+                let has_ascii = word.chars().any(|c| c.is_ascii_alphanumeric());
+                let has_han = word.chars().any(chunk::is_han_char);
+                (has_ascii && has_han).then(|| {
+                    (
+                        m.byte_start,
+                        m.byte_end,
+                        m.word_id,
+                        self.dict.log_prob(m.word_id),
+                    )
+                })
+            })
+            .collect();
+        candidates.sort_by(|a, b| {
+            a.0.cmp(&b.0)
+                .then_with(|| b.1.cmp(&a.1))
+                .then_with(|| b.3.total_cmp(&a.3))
+        });
+
+        let mut out = Vec::new();
+        let mut cursor = 0usize;
+        for (start, end, word_id, _) in candidates {
+            if start < cursor {
+                continue;
+            }
+            out.push(Segment {
+                byte_start: start,
+                byte_end: end,
+                kind: SegKind::Dict(word_id),
+            });
+            cursor = end;
+        }
+        out
+    }
+
+    /// 對不含混合詞典保護區間的子範圍執行原本主管線。
+    fn cut_range(
+        &self,
+        normalized: &str,
+        start: usize,
+        end: usize,
+        chunks: &mut Vec<chunk::Chunk>,
+        scratch: &mut Vec<Segment>,
+        out: &mut Vec<Segment>,
+    ) {
+        if start >= end {
+            return;
+        }
+        chunks.clear();
+        chunk::split(&normalized[start..end], chunks);
+        for ch in chunks.iter() {
+            let byte_start = start + ch.byte_start;
+            let byte_end = start + ch.byte_end;
             match ch.kind {
                 ChunkKind::Han => {
                     scratch.clear();
                     dag::cut_dag(
                         &self.dict,
-                        &normalized[ch.byte_start..ch.byte_end],
-                        ch.byte_start,
-                        &mut scratch,
+                        &normalized[byte_start..byte_end],
+                        byte_start,
+                        scratch,
                     );
-                    self.merge_oov_runs(normalized, &scratch, &mut out);
+                    self.merge_oov_runs(normalized, scratch, out);
                 }
                 kind => out.push(Segment {
-                    byte_start: ch.byte_start,
-                    byte_end: ch.byte_end,
+                    byte_start,
+                    byte_end,
                     kind: direct_kind(kind),
                 }),
             }
         }
-        out
     }
 
     /// 詞段 → 統一詞性 id。
@@ -243,7 +338,10 @@ impl Segmenter {
     fn merge_oov_runs(&self, normalized: &str, segs: &[Segment], out: &mut Vec<Segment>) {
         let is_single = |s: &Segment| {
             let t = &normalized[s.byte_start..s.byte_end];
-            t.chars().next().map(|c| c.len_utf8() == t.len()).unwrap_or(false)
+            t.chars()
+                .next()
+                .map(|c| c.len_utf8() == t.len())
+                .unwrap_or(false)
         };
         let mut run_start = 0usize; // 進行中單字 run 的起始索引
         let mut run_len = 0usize;
@@ -286,6 +384,17 @@ impl Segmenter {
     }
 }
 
+fn intern_tag(name: &str, tags: &mut Vec<String>) -> Result<u8, LoadError> {
+    if let Some(i) = tags.iter().position(|t| t == name) {
+        return Ok(i as u8);
+    }
+    if tags.len() > u8::MAX as usize {
+        return Err(LoadError::TooManyTags(tags.len() + 1));
+    }
+    tags.push(name.to_string());
+    Ok((tags.len() - 1) as u8)
+}
+
 /// 預切塊種類 → 詞段種類（Han 不在此列，另走 DAG）。
 fn direct_kind(kind: ChunkKind) -> SegKind {
     match kind {
@@ -298,5 +407,22 @@ fn direct_kind(kind: ChunkKind) -> SegKind {
         ChunkKind::Space => SegKind::Space,
         ChunkKind::Other => SegKind::Other,
         ChunkKind::Han => unreachable!("Han chunk 走 DAG 分支"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn unified_tag_table_rejects_more_than_256_names() {
+        let mut tags = Vec::new();
+        for i in 0..=u8::MAX {
+            assert!(matches!(intern_tag(&format!("tag-{i}"), &mut tags), Ok(id) if id == i));
+        }
+        assert!(matches!(
+            intern_tag("overflow", &mut tags),
+            Err(LoadError::TooManyTags(257))
+        ));
     }
 }

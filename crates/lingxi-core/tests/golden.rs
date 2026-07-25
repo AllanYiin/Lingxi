@@ -2,6 +2,7 @@
 //! 1. must_pass.tsv — 人工整理的關鍵詞邊界斷言（包含式，非完整切分比對）
 //! 2. 真實語料結構驗證 — 對 ModelingData 新聞語料抽樣，驗證覆蓋不變量
 //!    （詞段無縫拼回原文）並輸出分佈統計供人工檢視。
+//!
 //! 資產或語料不存在時測試跳過（CI 需先跑 lingxi-convert）。
 
 use lingxi_core::Segmenter;

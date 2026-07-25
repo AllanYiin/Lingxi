@@ -92,7 +92,7 @@ impl Dict {
             let tag_id = match self.tag_names.iter().position(|t| t == tag_name) {
                 Some(i) => i as u8,
                 None => {
-                    if self.tag_names.len() >= u8::MAX as usize + 1 {
+                    if self.tag_names.len() > u8::MAX as usize {
                         return Err(format!("詞性表已滿（256），無法新增詞性 {tag_name}"));
                     }
                     self.tag_names.push(tag_name.to_string());
@@ -121,10 +121,18 @@ impl Dict {
         }
 
         let id_base = self.word_tags.len() as u32;
-        let patterns = words.iter().enumerate().map(|(i, w)| (w.as_str(), id_base + i as u32));
+        let patterns = words
+            .iter()
+            .enumerate()
+            .map(|(i, w)| (w.as_str(), id_base + i as u32));
         let automaton = CharwiseDoubleArrayAhoCorasick::<u32>::with_values(patterns)
             .map_err(|e| format!("自訂詞典自動機建構失敗: {e}"))?;
-        self.user = Some(UserDict { automaton, tags, log_probs, id_base });
+        self.user = Some(UserDict {
+            automaton,
+            tags,
+            log_probs,
+            id_base,
+        });
         Ok(())
     }
 
@@ -146,17 +154,22 @@ impl Dict {
     /// 依 log 機率取捨（DAG DP 與詞性回查皆取機率較高者）。
     #[inline]
     pub fn matches<'s>(&'s self, normalized: &'s str) -> impl Iterator<Item = DictMatch> + 's {
-        let main = self.automaton.find_overlapping_iter(normalized).map(|m| DictMatch {
-            byte_start: m.start(),
-            byte_end: m.end(),
-            word_id: m.value(),
-        });
-        let user = self.user.iter().flat_map(move |u| {
-            u.automaton.find_overlapping_iter(normalized).map(|m| DictMatch {
+        let main = self
+            .automaton
+            .find_overlapping_iter(normalized)
+            .map(|m| DictMatch {
                 byte_start: m.start(),
                 byte_end: m.end(),
                 word_id: m.value(),
-            })
+            });
+        let user = self.user.iter().flat_map(move |u| {
+            u.automaton
+                .find_overlapping_iter(normalized)
+                .map(|m| DictMatch {
+                    byte_start: m.start(),
+                    byte_end: m.end(),
+                    word_id: m.value(),
+                })
         });
         main.chain(user)
     }
