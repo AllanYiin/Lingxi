@@ -61,7 +61,10 @@ fn parse_args() -> Result<Args> {
             }
             "--keywords" => {
                 args.keywords = Some(
-                    it.next().context("--keywords 需要參數")?.parse().context("--keywords 需為整數")?,
+                    it.next()
+                        .context("--keywords 需要參數")?
+                        .parse()
+                        .context("--keywords 需為整數")?,
                 )
             }
             "--stats" => args.stats = true,
@@ -81,13 +84,20 @@ fn main() -> Result<()> {
     let t0 = Instant::now();
     let user_entries = match &args.user_dict {
         Some(path) => {
-            let text = std::fs::read_to_string(path).with_context(|| format!("讀取自訂詞典 {path}"))?;
+            let text =
+                std::fs::read_to_string(path).with_context(|| format!("讀取自訂詞典 {path}"))?;
             lingxi_core::parse_user_dict(&text)
         }
         None => Vec::new(),
     };
-    let seg = Segmenter::from_asset_dir_with_user_dict(&args.assets, &user_entries)
-        .with_context(|| format!("載入資產目錄 {} 失敗（可用 --assets 或 LINGXI_ASSETS 指定）", args.assets))?;
+    let seg = Segmenter::from_asset_dir_with_user_dict(&args.assets, &user_entries).with_context(
+        || {
+            format!(
+                "載入資產目錄 {} 失敗（可用 --assets 或 LINGXI_ASSETS 指定）",
+                args.assets
+            )
+        },
+    )?;
     let load_ms = t0.elapsed().as_millis();
 
     let stdout = std::io::stdout();

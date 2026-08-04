@@ -51,12 +51,10 @@ pub unsafe extern "C" fn lingxi_new_from_dir(dir: *const c_char) -> *mut LingxiH
 }
 
 /// 從資產目錄建立分詞器並附加自訂詞典；失敗回傳 NULL。
-/// `user_dict_utf8` 為 jieba 格式詞典全文（每行 `詞 [頻率] [詞性]`），
-/// 長度 `user_dict_len` bytes，不需 NUL 結尾；傳 NULL/0 表示無自訂詞典。
 ///
 /// # Safety
-/// `dir` 須為有效的 NUL 結尾 UTF-8 路徑字串；
-/// `user_dict_utf8` 非 NULL 時須指向長度至少 `user_dict_len` 的有效緩衝。
+/// `dir` 須為有效 NUL 結尾 UTF-8；非空 user dictionary 指標須指向至少
+/// `user_dict_len` bytes 的有效 UTF-8 緩衝。
 #[no_mangle]
 pub unsafe extern "C" fn lingxi_new_from_dir_ex(
     dir: *const c_char,
@@ -80,10 +78,9 @@ pub unsafe extern "C" fn lingxi_new_from_dir_ex(
     };
     match lingxi_core::Segmenter::from_asset_dir_with_user_dict(dir, &entries) {
         Ok(seg) => {
-            // 詞性表在載入時一次轉為 CString，之後 lingxi_tag_name 零成本。
             let tag_cstrings = (0..=u8::MAX)
-                .map_while(|i| {
-                    let name = seg.try_tag_name(i)?;
+                .map_while(|index| {
+                    let name = seg.try_tag_name(index)?;
                     Some(CString::new(name).expect("詞性名稱不含 NUL"))
                 })
                 .collect();

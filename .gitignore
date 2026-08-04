@@ -1,5 +1,34 @@
-/target
-assets/*.bin
-Cargo.lock
-crates/lingxi-py/python/lingxi/assets/
-crates/lingxi-wasm/pkg/
+# Rust build output
+/target/
+**/*.rs.bk
+
+# Local model assets (not redistributable yet)
+/assets/*.bin
+/crates/lingxi-py/python/lingxi/assets/
+/crates/lingxi-wasm/pkg/
+
+# Generated packages and internal delivery bundles
+/dist/
+/crates/*.zip
+*.whl
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# Local configuration and secrets
+.env
+.env.*
+!.env.example
+
+# Editors and operating systems
+.idea/
+.vscode/
+.vs/
+.DS_Store
+Thumbs.db
+
+# Downloaded corpora, CKIP models, and generated training artifacts
+/.corpus-work/

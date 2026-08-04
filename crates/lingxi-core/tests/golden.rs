@@ -9,7 +9,10 @@ use lingxi_core::Segmenter;
 
 fn load() -> Option<Segmenter> {
     let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/../../assets");
-    Segmenter::from_asset_dir(dir).ok()
+    if !std::path::Path::new(dir).join("dict.bin").exists() {
+        return None;
+    }
+    Some(Segmenter::from_asset_dir(dir).expect("assets 存在但不是有效 LXA2 模型"))
 }
 
 #[test]
@@ -40,7 +43,11 @@ fn must_pass_word_boundaries() {
         }
     }
     let pass_rate = 100.0 * (checked - failures.len()) as f64 / checked as f64;
-    eprintln!("must-pass: {}/{} ({pass_rate:.1}%)", checked - failures.len(), checked);
+    eprintln!(
+        "must-pass: {}/{} ({pass_rate:.1}%)",
+        checked - failures.len(),
+        checked
+    );
     assert!(
         failures.is_empty(),
         "{} 項失敗:\n{}",
@@ -57,7 +64,10 @@ fn corpus_coverage_and_stats() {
         r"D:\PycharmProjects\LingXi\ModelingData\NewsData.txt",
         r"D:\PycharmProjects\LingXi\ModelingData\UncutNewsData.txt",
     ];
-    let Some(path) = corpus_paths.iter().find(|p| std::path::Path::new(p).exists()) else {
+    let Some(path) = corpus_paths
+        .iter()
+        .find(|p| std::path::Path::new(p).exists())
+    else {
         eprintln!("語料不存在，跳過");
         return;
     };

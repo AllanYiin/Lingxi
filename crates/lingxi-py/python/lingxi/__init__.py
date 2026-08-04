@@ -31,8 +31,8 @@ def load(
 
     asset_dir 省略時依序找：環境變數 LINGXI_ASSETS → wheel 內附模型。
     user_dict 為自訂詞典：檔案路徑，或詞條行的可迭代物件。
-    詞條格式（jieba 相容）：``詞 [頻率] [詞性]``，頻率省略時自動推定為
-    恰好贏過現行切分的值，詞性省略時為 "n"。
+    詞條格式：``詞 頻率 [詞性]``；詞必須至少兩字，頻率必須是有限正數。
+    詞性省略時固定使用 CKIP ``Na``。
     """
     if asset_dir is None:
         asset_dir = os.environ.get("LINGXI_ASSETS") or _BUNDLED_ASSETS
@@ -42,7 +42,10 @@ def load(
             lines = Path(user_dict).read_text(encoding="utf-8").splitlines()
         else:
             lines = list(user_dict)
-    return Segmenter(str(asset_dir), lines)
+    return Segmenter(
+        str(asset_dir),
+        lines,
+    )
 
 
 _default: Segmenter | None = None

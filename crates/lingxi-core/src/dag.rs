@@ -1,253 +1,524 @@
-//! DAG 建構與動態規劃最佳路徑。
+//! Second-order BMES Viterbi with dictionary span substitution.
 //!
-//! 對一段（已正規化的）連續文字：AC 掃描收集所有詞典命中為 DAG 邊，
-//! 由右至左 DP 取 log 機率總和最大的切分路徑（jieba 式）。
-//! 舊版 C# 在 DP 迴圈內做線性 LINQ 掃描導致近 O(n³)；本實作為
-//! O(邊數 + 字元數)，邊在單次 AC 掃描中產生。
+//! Every token has a deterministic BMES shape (S, BE, or BM..E). A
+//! multi-character dictionary hit substitutes ln(freq / total) for the
+//! token-internal BMES score. Sentence-start and cross-token transitions
+//! remain part of the global score.
+
+use std::collections::HashMap;
 
 use crate::dict::Dict;
+use crate::model::{BmesModel, STATE_B, STATE_E, STATE_M, STATE_S};
 use crate::segment::{SegKind, Segment};
 
-/// 一條 DAG 邊：從某字元位置起的候選詞。
+const MAX_TOKEN_CHARS: usize = u8::MAX as usize;
+
+#[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
+enum Context {
+    Start,
+    One(u8),
+    Pair(u8, u8),
+}
+
 #[derive(Clone, Copy)]
-struct Edge {
-    /// 邊終點的字元位置（exclusive）。
-    end: u32,
-    /// 候選詞的 ln(freq/total)；未登入單字為平滑值。
-    log_prob: f32,
-    /// 詞條 id；未登入單字邊為 None。
+struct Route {
+    score: f64,
+    node: Option<usize>,
+}
+
+#[derive(Clone, Copy)]
+struct BackNode {
+    previous: Option<usize>,
+    start: usize,
+    end: usize,
     word_id: Option<u32>,
 }
 
-/// 對一段連續文字做 DAG+DP 切分，結果 push 進 `out`。
-///
-/// `chunk` 為已正規化文字的子切片；`byte_base` 是它在原始輸入中的
-/// byte 偏移，輸出的 Segment byte 區間一律以原始輸入為座標系。
-pub fn cut_dag(dict: &Dict, chunk: &str, byte_base: usize, out: &mut Vec<Segment>) {
-    // 字元邊界表：boundaries[i] = 第 i 個字元的 byte 起點，末尾為 chunk.len()。
-    let boundaries: Vec<u32> = chunk
-        .char_indices()
-        .map(|(b, _)| b as u32)
-        .chain(std::iter::once(chunk.len() as u32))
-        .collect();
-    let n = boundaries.len() - 1; // 字元數
-    if n == 0 {
-        return;
-    }
-    // 單字元 chunk 直接輸出，省去建 DAG。
-    if n == 1 {
-        // 主詞典與自訂詞典皆可能命中同一字，取機率高者（自訂覆蓋語意）。
-        let word_id = dict
-            .matches(chunk)
-            .filter(|m| m.byte_end == chunk.len())
-            .max_by(|a, b| dict.log_prob(a.word_id).total_cmp(&dict.log_prob(b.word_id)))
-            .map(|m| m.word_id);
-        out.push(Segment {
-            byte_start: byte_base,
-            byte_end: byte_base + chunk.len(),
-            kind: word_id.map_or(SegKind::Oov, SegKind::Dict),
-        });
-        return;
-    }
-
-    // 收集 DAG 邊，按起點字元位置分桶。
-    let mut edges: Vec<Vec<Edge>> = vec![Vec::new(); n];
-    let mut has_single: Vec<bool> = vec![false; n];
-    let char_pos_of = |byte: u32| boundaries.binary_search(&byte).expect("命中必落在字元邊界");
-    for m in dict.matches(chunk) {
-        let start = char_pos_of(m.byte_start as u32);
-        let end = char_pos_of(m.byte_end as u32);
-        if end - start == 1 {
-            has_single[start] = true;
-        }
-        edges[start].push(Edge {
-            end: end as u32,
-            log_prob: dict.log_prob(m.word_id),
-            word_id: Some(m.word_id),
-        });
-    }
-    // 每個位置補上未登入單字邊（若無詞典單字邊），保證 DAG 連通，
-    // 也讓「跳過詞典多字詞、逐字走」的路徑始終存在（與 jieba 語意一致）。
-    for i in 0..n {
-        if !has_single[i] {
-            edges[i].push(Edge {
-                end: (i + 1) as u32,
-                log_prob: dict.oov_char_log_prob,
-                word_id: None,
-            });
+#[inline]
+fn append_context(context: Context, states: &[usize]) -> Context {
+    let mut values = Vec::with_capacity(4);
+    match context {
+        Context::Start => {}
+        Context::One(a) => values.push(a),
+        Context::Pair(a, b) => {
+            values.push(a);
+            values.push(b);
         }
     }
-
-    // 由右至左 DP：route[i] = 從位置 i 切到句尾的最大 log 機率與最佳邊。
-    // f32 累加對長 chunk 精度足夠（log 值域小、chunk 通常短）。
-    let mut route: Vec<(f32, u32)> = vec![(0.0, 0); n + 1];
-    for i in (0..n).rev() {
-        let mut best = (f32::NEG_INFINITY, i as u32 + 1);
-        for e in &edges[i] {
-            let score = e.log_prob + route[e.end as usize].0;
-            if score > best.0 {
-                best = (score, e.end);
-            }
-        }
-        route[i] = best;
-    }
-
-    // 沿最佳路徑輸出詞段。
-    let mut i = 0usize;
-    while i < n {
-        let end = route[i].1 as usize;
-        // 重查該邊的 word_id：邊桶內線性找（每桶通常僅數條）。
-        // 同區間可能有主詞典與自訂詞典兩條邊，取機率高者（DP 選中的即是它）。
-        let word_id = edges[i]
-            .iter()
-            .filter(|e| e.end as usize == end)
-            .max_by(|a, b| a.log_prob.total_cmp(&b.log_prob))
-            .and_then(|e| e.word_id);
-        out.push(Segment {
-            byte_start: byte_base + boundaries[i] as usize,
-            byte_end: byte_base + boundaries[end] as usize,
-            kind: word_id.map_or(SegKind::Oov, SegKind::Dict),
-        });
-        i = end;
+    values.extend(states.iter().map(|&state| state as u8));
+    match values.as_slice() {
+        [single] => Context::One(*single),
+        _ => Context::Pair(values[values.len() - 2], values[values.len() - 1]),
     }
 }
 
+#[inline]
+fn emit1(model: &BmesModel, row: Option<usize>, state: usize) -> f64 {
+    row.map(|index| model.emit1[index][state] as f64)
+        .unwrap_or(model.emit1_unknown[state] as f64)
+}
+
+#[inline]
+fn emit2(model: &BmesModel, row: Option<usize>, previous: usize, state: usize) -> f64 {
+    row.map(|index| model.emit2[index][previous][state] as f64)
+        .unwrap_or(model.emit2_unknown[previous][state] as f64)
+}
+
+#[inline]
+fn boundary_score(model: &BmesModel, context: Context, state: usize) -> f64 {
+    match context {
+        Context::Start => model.start[state] as f64,
+        Context::One(previous) => model.trans1[previous as usize][state] as f64,
+        Context::Pair(previous2, previous1) => {
+            model.trans2[previous2 as usize][previous1 as usize][state] as f64
+        }
+    }
+}
+
+fn bmes_token_score(
+    model: &BmesModel,
+    rows: &[Option<usize>],
+    start: usize,
+    len: usize,
+    context: Context,
+    m_loop_prefix: &[f64],
+) -> f64 {
+    if len == 1 {
+        let previous = match context {
+            Context::Start => {
+                return model.start[STATE_S] as f64 + emit1(model, rows[start], STATE_S);
+            }
+            Context::One(previous) => previous as usize,
+            Context::Pair(_, previous) => previous as usize,
+        };
+        return boundary_score(model, context, STATE_S)
+            + emit2(model, rows[start], previous, STATE_S);
+    }
+
+    let previous = match context {
+        Context::Start => None,
+        Context::One(previous) => Some(previous as usize),
+        Context::Pair(_, previous) => Some(previous as usize),
+    };
+    let mut score = boundary_score(model, context, STATE_B)
+        + previous.map_or_else(
+            || emit1(model, rows[start], STATE_B),
+            |state| emit2(model, rows[start], state, STATE_B),
+        );
+
+    if len == 2 {
+        score += match context {
+            Context::Start => model.trans1[STATE_B][STATE_E] as f64,
+            Context::One(previous) | Context::Pair(_, previous) => {
+                model.trans2[previous as usize][STATE_B][STATE_E] as f64
+            }
+        } + emit2(model, rows[start + 1], STATE_B, STATE_E);
+        return score;
+    }
+
+    score += match context {
+        Context::Start => model.trans1[STATE_B][STATE_M] as f64,
+        Context::One(previous) | Context::Pair(_, previous) => {
+            model.trans2[previous as usize][STATE_B][STATE_M] as f64
+        }
+    } + emit2(model, rows[start + 1], STATE_B, STATE_M);
+
+    if len == 3 {
+        return score
+            + model.trans2[STATE_B][STATE_M][STATE_E] as f64
+            + emit2(model, rows[start + 2], STATE_M, STATE_E);
+    }
+
+    score += model.trans2[STATE_B][STATE_M][STATE_M] as f64
+        + emit2(model, rows[start + 2], STATE_M, STATE_M);
+    score += m_loop_prefix[start + len - 1] - m_loop_prefix[start + 3];
+    score
+        + model.trans2[STATE_M][STATE_M][STATE_E] as f64
+        + emit2(model, rows[start + len - 1], STATE_M, STATE_E)
+}
+
+#[cfg(test)]
+fn bmes_token_score_reference(
+    model: &BmesModel,
+    rows: &[Option<usize>],
+    start: usize,
+    len: usize,
+    initial: Context,
+) -> f64 {
+    let states: Vec<usize> = if len == 1 {
+        vec![STATE_S]
+    } else {
+        std::iter::once(STATE_B)
+            .chain(std::iter::repeat_n(STATE_M, len - 2))
+            .chain(std::iter::once(STATE_E))
+            .collect()
+    };
+    let mut context = initial;
+    let mut score = 0.0;
+    for (offset, &state) in states.iter().enumerate() {
+        score += boundary_score(model, context, state);
+        score += match context {
+            Context::Start => emit1(model, rows[start + offset], state),
+            Context::One(previous) | Context::Pair(_, previous) => {
+                emit2(model, rows[start + offset], previous as usize, state)
+            }
+        };
+        context = append_context(context, &[state]);
+    }
+    score
+}
+
+fn path_ends(arena: &[BackNode], mut node: Option<usize>) -> Vec<usize> {
+    let mut ends = Vec::new();
+    while let Some(index) = node {
+        ends.push(arena[index].end);
+        node = arena[index].previous;
+    }
+    ends.reverse();
+    ends
+}
+fn update_route(
+    routes: &mut HashMap<Context, Route>,
+    arena: &mut Vec<BackNode>,
+    context: Context,
+    score: f64,
+    candidate: BackNode,
+) {
+    let BackNode {
+        previous,
+        start,
+        end,
+        word_id,
+    } = candidate;
+    if let Some(current) = routes.get(&context).copied() {
+        if score < current.score {
+            return;
+        }
+        if score == current.score {
+            let mut candidate_ends = path_ends(arena, previous);
+            candidate_ends.push(end);
+            if candidate_ends >= path_ends(arena, current.node) {
+                return;
+            }
+        }
+        // `end` has not been expanded yet, so this route node cannot have
+        // descendants. Reuse it to keep the arena bounded by contexts × n.
+        let node = current.node.expect("non-start route has a backpointer");
+        arena[node] = BackNode {
+            previous,
+            start,
+            end,
+            word_id,
+        };
+        routes.insert(
+            context,
+            Route {
+                score,
+                node: Some(node),
+            },
+        );
+        return;
+    }
+    let node = arena.len();
+    arena.push(BackNode {
+        previous,
+        start,
+        end,
+        word_id,
+    });
+    routes.insert(
+        context,
+        Route {
+            score,
+            node: Some(node),
+        },
+    );
+}
+
+/// Decode one normalized chunk and append segments in original byte coordinates.
+fn cut_viterbi_impl(
+    dict: &Dict,
+    model: &BmesModel,
+    chunk: &str,
+    byte_base: usize,
+    out: &mut Vec<Segment>,
+    reference: bool,
+) {
+    let boundaries: Vec<usize> = chunk
+        .char_indices()
+        .map(|(byte, _)| byte)
+        .chain(std::iter::once(chunk.len()))
+        .collect();
+    let n = boundaries.len().saturating_sub(1);
+    if n == 0 {
+        return;
+    }
+    let rows: Vec<Option<usize>> = chunk
+        .chars()
+        .map(|character| model.chars.index_of(character))
+        .collect();
+
+    let mut dictionary_edges: Vec<HashMap<usize, (f64, u32)>> =
+        (0..n).map(|_| HashMap::new()).collect();
+    for found in dict.matches(chunk) {
+        let start = boundaries.binary_search(&found.byte_start).unwrap();
+        let end = boundaries.binary_search(&found.byte_end).unwrap();
+        if end - start < 2 {
+            continue;
+        }
+        let candidate = (dict.log_prob(found.word_id) as f64, found.word_id);
+        let slot = dictionary_edges[start].entry(end).or_insert(candidate);
+        if candidate.0 > slot.0 {
+            *slot = candidate;
+        }
+    }
+
+    let mut m_loop_prefix = vec![0.0f64; n + 1];
+    for position in 0..n {
+        m_loop_prefix[position + 1] = m_loop_prefix[position]
+            + model.trans2[STATE_M][STATE_M][STATE_M] as f64
+            + emit2(model, rows[position], STATE_M, STATE_M);
+    }
+
+    let mut routes: Vec<HashMap<Context, Route>> = (0..=n).map(|_| HashMap::new()).collect();
+    routes[0].insert(
+        Context::Start,
+        Route {
+            score: 0.0,
+            node: None,
+        },
+    );
+    let mut arena = Vec::new();
+
+    #[allow(clippy::needless_range_loop)] // end indexes synchronized route and edge tables
+    for start in 0..n {
+        let sources: Vec<(Context, Route)> = routes[start]
+            .iter()
+            .map(|(&context, &route)| (context, route))
+            .collect();
+        if sources.is_empty() {
+            continue;
+        }
+        for end in start + 1..=n.min(start + MAX_TOKEN_CHARS) {
+            let len = end - start;
+            let dictionary = dictionary_edges[start].get(&end).copied();
+            let shape: &[usize] = if len == 1 {
+                &[STATE_S]
+            } else if len == 2 {
+                &[STATE_B, STATE_E]
+            } else {
+                &[STATE_M, STATE_E]
+            };
+            for &(context, source) in &sources {
+                let (token_score, word_id) = match dictionary {
+                    Some((log_prob, word_id)) => (
+                        boundary_score(model, context, STATE_B) + log_prob,
+                        Some(word_id),
+                    ),
+                    None => (
+                        if reference {
+                            #[cfg(test)]
+                            {
+                                bmes_token_score_reference(model, &rows, start, len, context)
+                            }
+                            #[cfg(not(test))]
+                            {
+                                unreachable!()
+                            }
+                        } else {
+                            bmes_token_score(model, &rows, start, len, context, &m_loop_prefix)
+                        },
+                        None,
+                    ),
+                };
+                update_route(
+                    &mut routes[end],
+                    &mut arena,
+                    append_context(context, shape),
+                    source.score + token_score,
+                    BackNode {
+                        previous: source.node,
+                        start,
+                        end,
+                        word_id,
+                    },
+                );
+            }
+        }
+    }
+
+    let Some(best) = routes[n].values().max_by(|left, right| {
+        left.score
+            .total_cmp(&right.score)
+            .then_with(|| path_ends(&arena, right.node).cmp(&path_ends(&arena, left.node)))
+    }) else {
+        return;
+    };
+    let mut path = Vec::new();
+    let mut node = best.node;
+    while let Some(index) = node {
+        let item = arena[index];
+        path.push(item);
+        node = item.previous;
+    }
+    path.reverse();
+    out.extend(path.into_iter().map(|item| Segment {
+        byte_start: byte_base + boundaries[item.start],
+        byte_end: byte_base + boundaries[item.end],
+        kind: item.word_id.map_or(SegKind::Oov, SegKind::Dict),
+    }));
+}
+
+/// Decode one normalized chunk and append segments in original byte coordinates.
+pub fn cut_viterbi(
+    dict: &Dict,
+    model: &BmesModel,
+    chunk: &str,
+    byte_base: usize,
+    out: &mut Vec<Segment>,
+) {
+    cut_viterbi_impl(dict, model, chunk, byte_base, out, false);
+}
+
+#[cfg(test)]
+fn cut_viterbi_reference(
+    dict: &Dict,
+    model: &BmesModel,
+    chunk: &str,
+    byte_base: usize,
+    out: &mut Vec<Segment>,
+) {
+    cut_viterbi_impl(dict, model, chunk, byte_base, out, true);
+}
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::dict::Dict;
-    use crate::model::DictModel;
+    use crate::model::{CharTable, DictModel, MIN_LOG};
     use daachorse::CharwiseDoubleArrayAhoCorasick;
 
-    /// 以小詞典建構 Dict：words = (詞, 頻率, 詞性)。
-    fn tiny_dict(words: &[(&str, f64, &str)]) -> Dict {
-        let total: f64 = words.iter().map(|(_, f, _)| f).sum();
-        let mut sorted: Vec<_> = words.to_vec();
-        sorted.sort_by_key(|(w, _, _)| w.to_string());
-        let tag_names: Vec<String> = {
-            let mut t: Vec<String> = sorted.iter().map(|(_, _, t)| t.to_string()).collect();
-            t.sort();
-            t.dedup();
-            t
-        };
-        let patterns: Vec<(&str, u32)> =
-            sorted.iter().enumerate().map(|(i, (w, _, _))| (*w, i as u32)).collect();
-        let automaton: CharwiseDoubleArrayAhoCorasick<u32> =
-            CharwiseDoubleArrayAhoCorasick::with_values(patterns).unwrap();
-        Dict::from_model(DictModel {
-            automaton_bytes: automaton.serialize(),
-            word_tags: sorted
+    fn tiny_models(words: &[(&str, f64)]) -> (Dict, BmesModel) {
+        let total: f64 = words.iter().map(|(_, frequency)| frequency).sum();
+        let automaton = CharwiseDoubleArrayAhoCorasick::<u32>::with_values(
+            words
                 .iter()
-                .map(|(_, _, t)| tag_names.iter().position(|x| x == t).unwrap() as u8)
+                .enumerate()
+                .map(|(index, (word, _))| (*word, index as u32)),
+        )
+        .unwrap();
+        let dict = Dict::from_model(DictModel {
+            automaton_bytes: automaton.serialize(),
+            tag_names: vec!["Na".into()],
+            word_tags: vec![0; words.len()],
+            word_log_probs: words
+                .iter()
+                .map(|(_, frequency)| (frequency / total).ln() as f32)
                 .collect(),
-            word_log_probs: sorted.iter().map(|(_, f, _)| ((f / total).ln()) as f32).collect(),
-            word_char_lens: sorted.iter().map(|(w, _, _)| w.chars().count() as u8).collect(),
-            tag_names,
+            word_char_lens: words
+                .iter()
+                .map(|(word, _)| word.chars().count() as u8)
+                .collect(),
             total_log: total.ln() as f32,
             variant_map: vec![],
-        })
-    }
-
-    fn cut_words<'a>(dict: &Dict, text: &'a str) -> Vec<&'a str> {
-        let mut segs = Vec::new();
-        cut_dag(dict, text, 0, &mut segs);
-        segs.iter().map(|s| &text[s.byte_start..s.byte_end]).collect()
-    }
-
-    #[test]
-    fn dp_prefers_high_frequency_path() {
-        // 「北京天安門」整詞頻率高於「北京」+「天安門」分開時，應切整詞。
-        let dict = tiny_dict(&[
-            ("北京", 100.0, "ns"),
-            ("天安門", 80.0, "ns"),
-            ("北京天安門", 5000.0, "ns"),
-            ("我", 500.0, "r"),
-            ("愛", 300.0, "v"),
-        ]);
-        assert_eq!(cut_words(&dict, "我愛北京天安門"), vec!["我", "愛", "北京天安門"]);
-    }
-
-    #[test]
-    fn dp_splits_when_parts_win() {
-        // 整詞頻率極低時，DP 應選「北京 / 天安門」。
-        // ln(1/5981)+... vs ln(100/5981)+ln(80/5981)：分開較大。
-        let dict = tiny_dict(&[
-            ("北京", 100.0, "ns"),
-            ("天安門", 80.0, "ns"),
-            ("北京天安門", 1.0, "ns"),
-            ("我", 500.0, "r"),
-            ("愛", 300.0, "v"),
-        ]);
-        assert_eq!(cut_words(&dict, "我愛北京天安門"), vec!["我", "愛", "北京", "天安門"]);
+        });
+        let chars = CharTable {
+            chars: vec!['乙', '甲'],
+        };
+        let mut trans1 = [[MIN_LOG; 4]; 4];
+        trans1[STATE_B][STATE_M] = -0.5;
+        trans1[STATE_B][STATE_E] = -0.5;
+        trans1[STATE_E][STATE_B] = -0.5;
+        trans1[STATE_E][STATE_S] = -0.5;
+        trans1[STATE_S][STATE_B] = -0.5;
+        trans1[STATE_S][STATE_S] = -0.5;
+        trans1[STATE_M][STATE_M] = -0.5;
+        trans1[STATE_M][STATE_E] = -0.5;
+        let mut trans2 = [[[MIN_LOG; 4]; 4]; 4];
+        trans2.fill(trans1);
+        let model = BmesModel {
+            chars,
+            start: [-0.5, MIN_LOG, MIN_LOG, -0.5],
+            trans1,
+            trans2,
+            emit1: vec![[-0.5; 4]; 2],
+            emit2: vec![[[-0.5; 4]; 4]; 2],
+            emit1_unknown: [-1.0; 4],
+            emit2_unknown: [[-1.0; 4]; 4],
+        };
+        (dict, model)
     }
 
     #[test]
-    fn oov_chars_fall_back_to_single() {
-        // 詞典完全沒有的字應逐字輸出且 kind 為 Oov。
-        let dict = tiny_dict(&[("你好", 10.0, "l")]);
-        let mut segs = Vec::new();
-        cut_dag(&dict, "你好嗎", 0, &mut segs);
-        let words: Vec<&str> = segs.iter().map(|s| &"你好嗎"[s.byte_start..s.byte_end]).collect();
-        assert_eq!(words, vec!["你好", "嗎"]);
-        assert!(matches!(segs[0].kind, SegKind::Dict(_)));
-        assert_eq!(segs[1].kind, SegKind::Oov);
+    fn single_character_dictionary_entries_are_ignored() {
+        let (dict, model) = tiny_models(&[("甲", 10_000.0), ("甲乙", 1.0)]);
+        let mut out = Vec::new();
+        cut_viterbi(&dict, &model, "甲", 0, &mut out);
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].kind, SegKind::Oov);
     }
 
     #[test]
-    fn byte_base_offsets_are_applied() {
-        let dict = tiny_dict(&[("你好", 10.0, "l")]);
-        let mut segs = Vec::new();
-        cut_dag(&dict, "你好", 30, &mut segs);
-        assert_eq!((segs[0].byte_start, segs[0].byte_end), (30, 36));
+    fn dictionary_span_replaces_internal_bmes_score() {
+        let (dict, mut model) = tiny_models(&[("甲乙", 100.0)]);
+        model.trans1[STATE_B][STATE_E] = -100.0;
+        let mut out = Vec::new();
+        cut_viterbi(&dict, &model, "甲乙", 0, &mut out);
+        assert_eq!(out.len(), 1);
+        assert!(matches!(out[0].kind, SegKind::Dict(_)));
     }
 
     #[test]
-    fn user_word_auto_freq_beats_current_split() {
-        // 主詞典會把「板南線」切成 板南/線；加入自訂詞（頻率自動推定）後應成一詞。
-        let mut dict = tiny_dict(&[("板南", 100.0, "ns"), ("線", 50.0, "n"), ("搭", 20.0, "v")]);
-        assert_eq!(cut_words(&dict, "搭板南線"), vec!["搭", "板南", "線"]);
-        dict.install_user_dict(&[crate::userdict::UserDictEntry {
-            word: "板南線".into(),
-            freq: None,
-            tag: Some("nt".into()),
-        }])
-        .unwrap();
-        let mut segs = Vec::new();
-        cut_dag(&dict, "搭板南線", 0, &mut segs);
-        let words: Vec<&str> =
-            segs.iter().map(|s| &"搭板南線"[s.byte_start..s.byte_end]).collect();
-        assert_eq!(words, vec!["搭", "板南線"]);
-        // 新詞性 nt 應已擴充進 tag_names，且該詞段回查得到它。
-        let SegKind::Dict(id) = segs[1].kind else { panic!("應為詞典詞") };
-        assert_eq!(dict.tag_names[dict.tag(id) as usize], "nt");
+    fn optimized_scores_equal_the_quadratic_reference() {
+        let (_, model) = tiny_models(&[("甲乙", 1.0)]);
+        let rows: Vec<_> = "甲乙甲乙甲乙"
+            .chars()
+            .map(|character| model.chars.index_of(character))
+            .collect();
+        let mut prefix = vec![0.0; rows.len() + 1];
+        for position in 0..rows.len() {
+            prefix[position + 1] = prefix[position]
+                + model.trans2[STATE_M][STATE_M][STATE_M] as f64
+                + emit2(&model, rows[position], STATE_M, STATE_M);
+        }
+        for context in [
+            Context::Start,
+            Context::One(STATE_S as u8),
+            Context::Pair(STATE_E as u8, STATE_S as u8),
+        ] {
+            for len in 1..=rows.len() {
+                let optimized = bmes_token_score(&model, &rows, 0, len, context, &prefix);
+                let reference = bmes_token_score_reference(&model, &rows, 0, len, context);
+                assert_eq!(optimized, reference, "context={context:?}, len={len}");
+            }
+        }
     }
 
     #[test]
-    fn user_word_overrides_tag_of_existing_word() {
-        // 同一詞主詞典與自訂詞典皆有時，顯式高頻的自訂詞條應贏得詞性回查。
-        let mut dict = tiny_dict(&[("雲端", 100.0, "n")]);
-        dict.install_user_dict(&[crate::userdict::UserDictEntry {
-            word: "雲端".into(),
-            freq: Some(10000.0),
-            tag: Some("nz".into()),
-        }])
-        .unwrap();
-        let mut segs = Vec::new();
-        cut_dag(&dict, "雲端", 0, &mut segs);
-        let SegKind::Dict(id) = segs[0].kind else { panic!("應為詞典詞") };
-        assert_eq!(dict.tag_names[dict.tag(id) as usize], "nz");
+    fn optimized_and_reference_decoders_match_all_short_binary_sentences() {
+        let (dict, model) = tiny_models(&[("甲乙", 5.0), ("乙甲", 3.0), ("甲乙甲", 2.0)]);
+        for len in 1..=6 {
+            for mask in 0..(1usize << len) {
+                let text: String = (0..len)
+                    .map(|bit| if mask & (1 << bit) == 0 { '甲' } else { '乙' })
+                    .collect();
+                let mut optimized = Vec::new();
+                let mut reference = Vec::new();
+                cut_viterbi(&dict, &model, &text, 0, &mut optimized);
+                cut_viterbi_reference(&dict, &model, &text, 0, &mut reference);
+                assert_eq!(optimized, reference, "text={text}");
+            }
+        }
     }
 
     #[test]
-    fn user_dict_normalizes_words_like_queries() {
-        // 自訂詞含 ASCII 大寫時應與查詢端同樣正規化（小寫）後才建自動機。
-        let mut dict = tiny_dict(&[("好", 10.0, "a")]);
-        dict.install_user_dict(&[crate::userdict::UserDictEntry {
-            word: "GPT模型".into(),
-            freq: Some(100.0),
-            tag: None,
-        }])
-        .unwrap();
-        assert_eq!(cut_words(&dict, "gpt模型好"), vec!["gpt模型", "好"]);
+    fn exact_ties_choose_the_earlier_boundary() {
+        let (dict, model) = tiny_models(&[("丙丁", 1.0)]);
+        let mut out = Vec::new();
+        cut_viterbi(&dict, &model, "甲乙", 0, &mut out);
+        assert_eq!(
+            out.iter()
+                .map(|segment| segment.byte_end)
+                .collect::<Vec<_>>(),
+            vec![3, 6]
+        );
     }
 }

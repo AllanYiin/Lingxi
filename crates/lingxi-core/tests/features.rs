@@ -1,14 +1,14 @@
 //! 自訂詞典與 TextRank 的真實資產整合測試。
 //! 資產不存在時跳過（同 golden.rs 慣例）。
 
-use lingxi_core::{parse_user_dict, Segmenter};
+use lingxi_core::{parse_user_dict, KeywordOptions, Segmenter};
 
 const ASSET_DIR: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../assets");
 
 #[test]
 fn user_dict_fixes_known_boundary_cases() {
     // 已知邊界案例：柯文哲（柯文是詞典詞）、板南線（缺詞）。
-    let entries = parse_user_dict("柯文哲 nr\n板南線 nt\n");
+    let entries = parse_user_dict("柯文哲 100000 Nb\n板南線 100000 Nb\n");
     let Ok(seg) = Segmenter::from_asset_dir_with_user_dict(ASSET_DIR, &entries) else {
         eprintln!("assets 不存在，跳過");
         return;
@@ -19,13 +19,15 @@ fn user_dict_fixes_known_boundary_cases() {
     // 自訂詞性應可經 tokenize 取回。
     let tokens = seg.tokenize("柯文哲搭板南線上班");
     let tags: Vec<&str> = tokens.iter().map(|t| seg.tag_name(t.tag)).collect();
-    assert!(tags.contains(&"nr"), "缺 nr 詞性，實際: {tags:?}");
-    assert!(tags.contains(&"nt"), "缺 nt 詞性，實際: {tags:?}");
+    assert!(
+        tags.iter().filter(|&&tag| tag == "Nb").count() >= 2,
+        "自訂詞應為 CKIP Nb，實際: {tags:?}"
+    );
 }
 
 #[test]
 fn user_dict_does_not_disturb_unrelated_text() {
-    let entries = parse_user_dict("板南線 nt\n");
+    let entries = parse_user_dict("板南線 100000 Nb\n");
     let (Ok(base), Ok(with_user)) = (
         Segmenter::from_asset_dir(ASSET_DIR),
         Segmenter::from_asset_dir_with_user_dict(ASSET_DIR, &entries),
@@ -39,8 +41,8 @@ fn user_dict_does_not_disturb_unrelated_text() {
 }
 
 #[test]
-fn mixed_script_words_work_in_main_and_user_dicts() {
-    let entries = parse_user_dict("COVID疫苗 100000 n\n3D列印 100000 n\nCheryl姐 100000 nr\n");
+fn mixed_script_words_work_in_curated_and_user_dicts() {
+    let entries = parse_user_dict("COVID疫苗 100000 Na\n3D列印 100000 Na\nCheryl姐 100000 Nb\n");
     let Ok(seg) = Segmenter::from_asset_dir_with_user_dict(ASSET_DIR, &entries) else {
         eprintln!("assets 不存在，跳過");
         return;
@@ -92,4 +94,38 @@ fn textrank_empty_and_no_candidate_inputs() {
     };
     assert!(seg.extract_keywords("", 10).is_empty());
     assert!(seg.extract_keywords("，。！？", 10).is_empty());
+}
+
+#[test]
+fn proper_noun_channel_is_independent_and_can_be_disabled() {
+    let entries = parse_user_dict("亞特蘭提斯 1000000000 Nb\n");
+    let Ok(seg) = Segmenter::from_asset_dir_with_user_dict(ASSET_DIR, &entries) else {
+        eprintln!("assets 不存在，跳過");
+        return;
+    };
+    let text = "亞特蘭提斯宣布推動海洋研究";
+    let entity_enabled =
+        seg.extract_keywords_with_options(text, 10, Some(&["VC"]), KeywordOptions::default());
+    assert!(
+        entity_enabled
+            .iter()
+            .any(|keyword| keyword.word == "亞特蘭提斯"),
+        "Nb 不在一般白名單時仍應能由專有名詞通道進榜: {entity_enabled:?}"
+    );
+
+    let entity_disabled = seg.extract_keywords_with_options(
+        text,
+        10,
+        Some(&["VC"]),
+        KeywordOptions {
+            proper_noun_enabled: false,
+            ..KeywordOptions::default()
+        },
+    );
+    assert!(
+        entity_disabled
+            .iter()
+            .all(|keyword| keyword.word != "亞特蘭提斯"),
+        "停用專有名詞通道後應完全遵循一般詞性白名單: {entity_disabled:?}"
+    );
 }

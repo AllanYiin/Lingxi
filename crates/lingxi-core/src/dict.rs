@@ -4,7 +4,7 @@
 //! （即 DAG 的全部邊），以及與轉換階段完全一致的文字正規化。
 
 use std::borrow::Cow;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use daachorse::CharwiseDoubleArrayAhoCorasick;
 
@@ -19,10 +19,10 @@ pub struct Dict {
     pub tag_names: Vec<String>,
     word_tags: Vec<u8>,
     word_log_probs: Vec<f32>,
-    /// 未登入單字的平滑 log 機率 = ln(0.5) - ln(total_freq)。
-    pub oov_char_log_prob: f32,
-    /// ln(total_freq)：自訂詞條顯式頻率換算 log 機率的基準。
-    total_log: f32,
+    /// 從資產 logp 還原的主詞典正頻率，供 runtime 覆寫後重新正規化。
+    word_freqs: Vec<f64>,
+    /// 被 runtime 詞條覆寫的主詞典 id。
+    overridden_main_ids: HashSet<u32>,
     /// 異體字映射（皆為 UTF-8 等長對）。
     variant_map: Vec<(char, char)>,
     /// 自訂詞典自動機；詞條 id 自 `word_tags.len()` 起編，與主詞典共用 id 空間。
@@ -54,13 +54,18 @@ impl Dict {
         let (automaton, _rest) = unsafe {
             CharwiseDoubleArrayAhoCorasick::<u32>::deserialize_unchecked(&m.automaton_bytes)
         };
+        let word_freqs: Vec<f64> = m
+            .word_log_probs
+            .iter()
+            .map(|&logp| ((logp + m.total_log) as f64).exp())
+            .collect();
         Dict {
             automaton,
             tag_names: m.tag_names,
             word_tags: m.word_tags,
             word_log_probs: m.word_log_probs,
-            oov_char_log_prob: 0.5f32.ln() - m.total_log,
-            total_log: m.total_log,
+            word_freqs,
+            overridden_main_ids: HashSet::new(),
             variant_map: m.variant_map,
             user: None,
         }
@@ -68,27 +73,23 @@ impl Dict {
 
     /// 載入自訂詞典（建構期呼叫一次）。
     ///
-    /// - 詞先經 `normalize`（與查詢端一致），重複詞條後者覆蓋前者。
-    /// - 顯式頻率 → ln(freq/total)（0.5 平滑下限）；省略頻率 → 對該詞跑
-    ///   主詞典 DAG DP 取最佳切分的 log 機率和，加上小幅餘裕，保證該詞
-    ///   恰好贏過現行切分（jieba `suggest_freq` 語意），又不過度擠壓
-    ///   與其他詞的跨界競爭。
+    /// - 詞先經 `normalize`，重複詞條後者覆蓋前者。
+    /// - 僅接受 2 至 255 字元、有限正頻率；主詞典同詞視為覆寫。
+    /// - 主詞典與 runtime 詞條合併後重新計算 total 與全部 logp。
     /// - 新詞性字串直接擴充 `tag_names`；超過 u8 id 空間（256）回傳錯誤。
     pub fn install_user_dict(&mut self, entries: &[UserDictEntry]) -> Result<(), String> {
-        // 贏過現行切分所需的 log 機率餘裕：遠大於 f32 累加誤差、遠小於詞頻級距。
-        const WIN_MARGIN: f32 = 1e-3;
-
         // 去重（後者覆蓋）並保持穩定順序，供自動機編 id。
         let mut index: HashMap<String, usize> = HashMap::new();
         let mut words: Vec<String> = Vec::new();
         let mut tags: Vec<u8> = Vec::new();
-        let mut log_probs: Vec<f32> = Vec::new();
+        let mut frequencies: Vec<f64> = Vec::new();
         for e in entries {
             let word = self.normalize(&e.word).into_owned();
-            if word.is_empty() {
-                continue;
+            let char_len = word.chars().count();
+            if !(2..=u8::MAX as usize).contains(&char_len) {
+                return Err(format!("自訂詞 {word:?} 必須包含 2 至 255 個字元"));
             }
-            let tag_name = e.tag.as_deref().unwrap_or("n");
+            let tag_name = e.tag.as_deref().unwrap_or("Na");
             let tag_id = match self.tag_names.iter().position(|t| t == tag_name) {
                 Some(i) => i as u8,
                 None => {
@@ -99,26 +100,57 @@ impl Dict {
                     (self.tag_names.len() - 1) as u8
                 }
             };
-            let logp = match e.freq {
-                Some(f) => (f.max(0.5) as f32).ln() - self.total_log,
-                None => self.best_split_log_prob(&word) + WIN_MARGIN,
-            };
+            let frequency = e.freq.ok_or_else(|| {
+                format!("自訂詞 {word:?} 缺少頻率；0.3.0 起 runtime 詞典必須提供正頻率")
+            })?;
+            if !frequency.is_finite() || frequency <= 0.0 {
+                return Err(format!("自訂詞 {word:?} 的頻率必須是有限正數"));
+            }
             match index.get(&word) {
                 Some(&i) => {
                     tags[i] = tag_id;
-                    log_probs[i] = logp;
+                    frequencies[i] = frequency;
                 }
                 None => {
                     index.insert(word.clone(), words.len());
                     words.push(word);
                     tags.push(tag_id);
-                    log_probs.push(logp);
+                    frequencies.push(frequency);
                 }
             }
         }
         if words.is_empty() {
             return Ok(());
         }
+
+        let mut overridden_main_ids = HashSet::new();
+        for word in &words {
+            for found in self.automaton.find_overlapping_iter(word) {
+                if found.start() == 0 && found.end() == word.len() {
+                    overridden_main_ids.insert(found.value());
+                }
+            }
+        }
+        let base_total: f64 = self.word_freqs.iter().sum();
+        let overridden_total: f64 = overridden_main_ids
+            .iter()
+            .map(|&id| self.word_freqs[id as usize])
+            .sum();
+        let total = base_total - overridden_total + frequencies.iter().sum::<f64>();
+        if !total.is_finite() || total <= 0.0 {
+            return Err("runtime 詞典合併後總頻率不合法".into());
+        }
+        let total_log = total.ln();
+        self.word_log_probs = self
+            .word_freqs
+            .iter()
+            .map(|frequency| (frequency.ln() - total_log) as f32)
+            .collect();
+        self.overridden_main_ids = overridden_main_ids;
+        let log_probs: Vec<f32> = frequencies
+            .iter()
+            .map(|frequency| (frequency.ln() - total_log) as f32)
+            .collect();
 
         let id_base = self.word_tags.len() as u32;
         let patterns = words
@@ -136,19 +168,6 @@ impl Dict {
         Ok(())
     }
 
-    /// 對單一詞跑主詞典 DAG DP，回傳最佳切分路徑的 log 機率和。
-    /// 只在載入自訂詞典時使用（此時 `self.user` 尚未含該詞）。
-    fn best_split_log_prob(&self, normalized_word: &str) -> f32 {
-        let mut segs = Vec::new();
-        crate::dag::cut_dag(self, normalized_word, 0, &mut segs);
-        segs.iter()
-            .map(|s| match s.kind {
-                crate::segment::SegKind::Dict(id) => self.log_prob(id),
-                _ => self.oov_char_log_prob,
-            })
-            .sum()
-    }
-
     /// 一次掃描回傳文字（須已正規化）中的所有詞典命中，byte 區間可重疊。
     /// 主詞典與自訂詞典的命中串接輸出；同一區間兩邊皆命中時由呼叫端
     /// 依 log 機率取捨（DAG DP 與詞性回查皆取機率較高者）。
@@ -157,6 +176,7 @@ impl Dict {
         let main = self
             .automaton
             .find_overlapping_iter(normalized)
+            .filter(move |m| !self.overridden_main_ids.contains(&m.value()))
             .map(|m| DictMatch {
                 byte_start: m.start(),
                 byte_end: m.end(),
@@ -183,6 +203,13 @@ impl Dict {
         }
     }
 
+    /// 是否為 runtime／curated 覆寫詞條。
+    #[inline]
+    pub fn is_user(&self, word_id: u32) -> bool {
+        self.user
+            .as_ref()
+            .is_some_and(|user| word_id >= user.id_base)
+    }
     /// 詞條的詞性 id（索引 `tag_names`）。
     #[inline]
     pub fn tag(&self, word_id: u32) -> u8 {
@@ -217,5 +244,78 @@ impl Dict {
                 })
                 .collect(),
         )
+    }
+}
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::model::DictModel;
+
+    fn tiny_dict() -> Dict {
+        let words = ["甲乙", "乙丙"];
+        let automaton = CharwiseDoubleArrayAhoCorasick::<u32>::with_values(
+            words
+                .iter()
+                .enumerate()
+                .map(|(id, word)| (*word, id as u32)),
+        )
+        .unwrap();
+        Dict::from_model(DictModel {
+            automaton_bytes: automaton.serialize(),
+            tag_names: vec!["Na".into()],
+            word_tags: vec![0, 0],
+            word_log_probs: vec![0.5f32.ln(), 0.5f32.ln()],
+            word_char_lens: vec![2, 2],
+            total_log: 20.0f32.ln(),
+            variant_map: vec![],
+        })
+    }
+
+    #[test]
+    fn runtime_dictionary_rejects_invalid_entries() {
+        for entry in [
+            UserDictEntry {
+                word: "甲".into(),
+                freq: Some(1.0),
+                tag: None,
+            },
+            UserDictEntry {
+                word: "甲乙".into(),
+                freq: None,
+                tag: None,
+            },
+            UserDictEntry {
+                word: "甲乙".into(),
+                freq: Some(0.0),
+                tag: None,
+            },
+            UserDictEntry {
+                word: "甲乙".into(),
+                freq: Some(f64::NAN),
+                tag: None,
+            },
+        ] {
+            assert!(tiny_dict().install_user_dict(&[entry]).is_err());
+        }
+    }
+
+    #[test]
+    fn runtime_override_recomputes_the_combined_total() {
+        let mut dict = tiny_dict();
+        dict.install_user_dict(&[UserDictEntry {
+            word: "甲乙".into(),
+            freq: Some(30.0),
+            tag: Some("Na".into()),
+        }])
+        .unwrap();
+        let matches: Vec<_> = dict.matches("甲乙乙丙").collect();
+        let overridden: Vec<_> = matches
+            .iter()
+            .filter(|item| item.byte_start == 0 && item.byte_end == 6)
+            .collect();
+        assert_eq!(overridden.len(), 1, "主詞典同詞必須被 runtime 詞條取代");
+        assert!((dict.log_prob(overridden[0].word_id) - (0.75f32).ln()).abs() < 1e-5);
+        let base = matches.iter().find(|item| item.byte_start == 6).unwrap();
+        assert!((dict.log_prob(base.word_id) - (0.25f32).ln()).abs() < 1e-5);
     }
 }

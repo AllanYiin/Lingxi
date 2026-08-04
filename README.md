@@ -1,97 +1,158 @@
-# lingxi-rs
+# LingXi
 
-繁體中文（台灣語料）分詞＋詞性標註引擎。舊版 C#/.NET Framework LingXi 的 Rust 重寫：
-單一核心、跨平台、無 UI，交付 CLI / Python / WASM-JS / C ABI 四種形態。
+## Overview｜專案概覽
 
-## 演算法管線
+LingXi 是以 Rust 重寫的繁體中文（台灣語料）分詞與詞性標註引擎。專案以單一核心提供 CLI、Python、WASM/JavaScript 與 C ABI，並支援自訂詞典及 TextRank 關鍵字抽取。
 
-```
-文字 → 正規化(ASCII小寫+異體字) → 預切塊(URL/email/英數/數字/時間/標點)
-     → Han 塊: daachorse AC 一次掃描建 DAG → 由右至左 DP 最佳路徑
-     → 連續單字 run: 二階 BMES HMM Viterbi 合併未登入詞
-     → OOV 詞: joint-state(BMES×詞性) POS Viterbi；詞典詞詞性直接查表
-     → Token { byte 區間, 詞性 }（零拷貝，詞由呼叫端切片）
-```
+> [!IMPORTANT]
+> 此 repository 目前只適合公開原始碼。執行完整分詞所需的本機模型不隨 repository 發布；現有模型組合至少包含不可公開再散布的語料衍生資產。請勿提交 `assets/*.bin`、wheel、WASM bundle 或 `dist/` 內部交付包。詳見 [ASSETS.md](ASSETS.md)。
 
-附加功能（建立在上述管線之上）：
-- **自訂詞典**：建構時載入 jieba 格式詞條（`詞 [頻率] [詞性]`），建成第二個
-  AC 自動機與主詞典共同建 DAG 邊。頻率省略時自動推定為「恰好贏過現行切分」
-  （jieba `suggest_freq` 語意——只保證贏過詞內部切分；若被跨界詞搶走，改給
-  顯式高頻率）。同詞覆蓋主詞典時取機率高者，詞性一併覆蓋。
-- **TextRank 關鍵字抽取**：`extract_keywords(text, top_k)`，jieba 相容參數
-  （window=5、d=0.85、10 次迭代），預設候選詞性為名詞類/動詞/英文詞，
-  可用 `allow_tags` 白名單覆寫。純演算法、無額外模型資產。
+## 功能
 
-與舊版的主要差異（刻意簡化，黃金集驗證等價或更好）：
-- 移除 MM/RMM 雙向多候選評分：全 DAG 全域 DP 是其嚴格超集
-- 二階 HMM 改為數學正確的 16 複合狀態標準 Viterbi（舊版為含硬編碼特例的樹狀近似）
-- 移除 word_state_tag（16.5MB）：只有 OOV 詞才需要 POS Viterbi
-- 排除詞典噪音：unknownnew 條目（7,789 筆）與 TaiwanDict n-gram（全 freq 0）
-  ——這些假邊會搶走正詞（如「與國」搶「國民黨」）
+- 單一全域二階 BMES Viterbi；多字詞典命中替代區段內 BMES 分數
+- 單字完全由 BMES 決定；分詞詞典只含有限正頻率的多字詞
+- 固定詞界的全句二階 POS Viterbi；已知詞使用完整 `P(tag|word)`
+- URL、Email、英數、時間、百分比與數量級預切
+- runtime 自訂詞典（多字詞＋必填有限正頻率）
+- TextRank 關鍵字抽取
+- CLI、Python、WASM/JavaScript、C ABI 四種介面
 
-## Workspace
+## 快速開始：驗證公開原始碼
 
-| crate | 內容 |
-|---|---|
-| `crates/lingxi-core` | 全部演算法；`Segmenter::cut / tokenize / cut_segments` |
-| `crates/lingxi-cli` | `lingxi` 執行檔：stdin/檔案 → words/tsv/jsonl |
-| `crates/lingxi-py` | PyO3 + maturin，wheel 內附模型，`cut_batch` rayon 平行釋放 GIL |
-| `crates/lingxi-wasm` | wasm-bindgen；模型由 JS fetch 傳入；offset 為 UTF-16 |
-| `crates/lingxi-ffi` | C ABI（.dll/.so/.a）＋手寫 `include/lingxi.h`；token 零拷貝 |
-| `tools/lingxi-convert` | 一次性：舊版 JSON 模型 → `assets/*.bin`（postcard + xxh3 校驗） |
+### Prerequisites / Requirements｜前置條件
 
-## 建置與模型轉換
+- Rust stable toolchain
+- Git
 
 ```bash
-# 1. 從舊版 JSON 轉出二進位模型（assets/*.bin 不進 git）
-cargo run --release -p lingxi-convert -- <Resources目錄> <ModelingData目錄> assets
-
-# 2. 測試（含黃金集與真實語料驗證；資產不存在時自動跳過）
-cargo test --release
-
-# 3. CLI
-echo "金管會前主委參加記者會" | ./target/release/lingxi --format tsv
-
-# 4. Python wheel（自動搬資產＋建置；--convert 可在 assets 缺少時代跑轉換）
-python tools/build_wheel.py
-
-# 5. WASM
-cd crates/lingxi-wasm && wasm-pack build --release --target nodejs
+git clone <repository-url>
+cd lingxi-rs
+cargo test --workspace --locked
+cargo clippy --workspace --all-targets --locked -- -D warnings
 ```
 
-## Python 用法
+沒有模型資產時，純核心單元測試仍會執行；需要真實模型的整合測試會明確顯示「assets 不存在，跳過」。兩個命令皆成功結束即代表公開原始碼可建置。
+
+## Installation｜安裝與本機模型
+
+完整執行需要以下三個檔案：
+
+```text
+assets/
+├── dict.bin
+├── hmm_bmes.bin
+└── hmm_pos.bin
+```
+
+這些檔案目前不在公開 repository 中。若你是內部維護者，請依 [ASSETS.md](ASSETS.md) 的規則準備本機資產；一般貢獻者不需要模型也能修改及測試純核心邏輯。
+
+## Usage｜使用方式
+
+### CLI
+
+有模型後可執行：
+
+```bash
+cargo build --release -p lingxi-cli
+echo "市值縮水約1200億美元" | ./target/release/lingxi --format tsv
+```
+
+0.3.0 模型與各 binding 的 `tag` 欄位使用 CKIP 原生詞性代碼。POS 固定在分詞完成後執行，不參與詞界競爭；舊 POS rerank 參數已移除。
+
+### Python
+
+需要 Python 3.9+、maturin，以及可合法使用的本機模型：
+
+```bash
+python tools/build_wheel.py
+```
 
 ```python
 import lingxi
-seg = lingxi.load()                    # wheel 內附模型；或 load(asset_dir=...)
-seg.cut("金管會前主委參加記者會")        # -> list[str]
-seg.tokenize("...")                    # -> list[Token(word, tag, start, end)]，字元座標
-seg.cut_batch(texts)                   # rayon 平行，釋放 GIL
 
-# 自訂詞典：檔案路徑或詞條行列表（jieba 格式）
-seg = lingxi.load(user_dict=["板南線 nt", "柯文哲 nr", "鹽酥雞 100000 n"])
+seg = lingxi.load()
+seg.cut("金管會前主委參加記者會")
+seg.tokenize("市值縮水約1200億美元")
+seg.cut_batch(["第一句", "第二句"])
 
-# TextRank 關鍵字 -> [(詞, 權重)]，權重降冪
-seg.extract_keywords(text, top_k=20)
-seg.extract_keywords(text, top_k=20, allow_tags=["n", "nt", "ns"])
+seg = lingxi.load(
+    user_dict=["板南線 100000 Nb", "柯文哲 100000 Nb", "鹽酥雞 100000 Na"]
+)
+
+# TextRank 預設另以 Nb 建立專有名詞通道：
+# 依詞頻與首次出現位置提供軟加分，不保證入榜；可調整權重與占比上限。
+seg.extract_keywords("要分析的長文本", top_k=20)
+seg.extract_keywords(
+    "要分析的長文本",
+    top_k=20,
+    proper_noun_enabled=True,
+    proper_noun_weight=0.25,
+    proper_noun_max_ratio=0.4,
+)
+
 ```
 
-CLI 對應：`--user-dict 詞典檔`、`--keywords N`（全文抽取模式）。
+### WASM 與 C ABI
 
-## 實測數據（Windows 11, x86_64）
+WASM binding 位於 `crates/lingxi-wasm`，模型由 JavaScript 載入後傳入：
 
-- 吞吐：單執行緒 30–37 MiB/s（目標 2 MB/s 的 15 倍）
-- 載入：45 ms（21.7MB dict.bin + 兩個 HMM 資產）
-- Python 批次：10,000 句 / 16 ms
-- WASM：wasm-opt 後 1.02MB，gzip 361KB（不含詞典）
-- must-pass 黃金集：90/90；語料 500 行覆蓋不變量全過
+```bash
+cd crates/lingxi-wasm
+wasm-pack build --release --target web
+```
 
-## 已知限制
+C ABI 位於 `crates/lingxi-ffi`，公開標頭為 `crates/lingxi-ffi/include/lingxi.h`：
 
-- 詞典頻率噪音：部分條目頻率來自舊 PTT 語料的錯誤切分（如「民黨」freq 11 萬），
-  長期解法是用乾淨語料重訓頻率
-- 人名辨識依賴 HMM/POS（舊版姓氏表規則已移除）：「柯文哲」若姓氏+名首字
-  恰為詞典詞（柯文）會切錯——可用自訂詞典（`柯文哲 nr`）修正
-- 自訂詞典的自動頻率只保證贏過詞內部切分；被跨界詞搶走時（如「吃鹽」搶走
-  「鹽酥雞」的首字）需給顯式高頻率
-- 全形數字（０-９）未特別處理（與舊版行為一致）
+```bash
+cargo build --release -p lingxi-ffi
+```
+
+## 演算法管線
+
+```text
+文字
+  → 正規化（ASCII 小寫 + 異體字）
+  → 確定性保護（URL / Email / 英數 / 數量 / 年份 / 時間 / 標點）
+  → Han 塊建立所有 BMES 詞段與多字詞典命中索引
+  → 單一全域二階 Viterbi（詞典 log(freq/total) 只替代命中區段內部）
+  → 固定詞界的全句二階 POS Viterbi
+     ├─ 已知詞：完整 P(tag|word)
+     └─ OOV：字元 joint-state POS HMM
+  → Token（原文區間 + 詞性）
+```
+
+## Repository 結構
+
+| 路徑 | 用途 | 公開狀態 |
+|---|---|---|
+| `crates/lingxi-core` | 分詞、HMM、POS、自訂詞典、TextRank | 可公開 |
+| `crates/lingxi-cli` | 命令列工具 | 可公開 |
+| `crates/lingxi-py` | PyO3 + maturin Python binding | 原始碼可公開 |
+| `crates/lingxi-wasm` | wasm-bindgen binding | 原始碼可公開 |
+| `crates/lingxi-ffi` | C ABI 與標頭 | 可公開 |
+| `tools/lingxi-convert` | 舊 JSON 模型轉二進位資產 | 工具原始碼可公開 |
+| `tests/golden` | 必須通過的分詞邊界案例 | 可公開 |
+| `assets` | 本機模型放置處 | 僅 README 可公開 |
+| `dist` | 內部建置與交付產物 | 不可提交 |
+
+完整說明見 [docs/REPOSITORY_LAYOUT.md](docs/REPOSITORY_LAYOUT.md)。
+
+## 效能基線
+
+在 Windows 11 x86_64、0.3.0 LXA2 模型上，代表性繁中長文的單執行緒 cut Criterion 中位數為：
+
+- 10K 字：14.18 ms
+- 20K 字：27.90 ms
+- 40K 字：48.71 ms
+- 10K／20K／40K CLI 行程峰值工作集約 216.6–216.7 MiB；主要由 116.3 MB 模型資產主導
+- 固定 1,400 句診斷的 CLI 模型載入約 194 ms、處理約 320 ms
+
+數據會隨模型、硬體與編譯器版本改變，應以本機 benchmark 為準：
+
+```bash
+cargo bench -p lingxi-core
+```
+
+## 貢獻與授權
+
+提交變更前請閱讀 [CONTRIBUTING.md](CONTRIBUTING.md)。原始碼採 [MIT License](LICENSE)；模型與語料不因原始碼採 MIT 而自動取得相同授權。

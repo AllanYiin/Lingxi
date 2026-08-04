@@ -27,9 +27,8 @@ WHEELS = ROOT / "target" / "wheels"
 
 REQUIRED = ["dict.bin", "hmm_bmes.bin", "hmm_pos.bin"]
 
-# lingxi-convert 的預設輸入（舊版 LingXi 專案的相對位置）；--convert 時使用
-OLD_RESOURCES = ROOT.parent / "LingXi" / "Resources"
-OLD_MODELING = ROOT.parent / "ModelingData"
+# lingxi-convert 的單一 canonical model directory。
+CANONICAL_MODEL = ROOT / ".corpus-work" / "legacy-ckip-canonical-v3" / "model"
 
 
 def run(cmd: list[str], cwd: Path) -> None:
@@ -48,14 +47,14 @@ def ensure_assets(auto_convert: bool) -> None:
     if not auto_convert:
         sys.exit(
             f"assets 缺少 {missing}。先跑 lingxi-convert，或加 --convert 讓本腳本代跑：\n"
-            f"  cargo run --release -p lingxi-convert -- <Resources> <ModelingData> assets"
+            f"  cargo run --release -p lingxi-convert -- <canonical-model-dir> assets"
         )
-    if not OLD_RESOURCES.exists():
-        sys.exit(f"--convert 需要舊版資源目錄，但 {OLD_RESOURCES} 不存在")
+    if not CANONICAL_MODEL.exists():
+        sys.exit(f"--convert 需要 canonical model directory，但 {CANONICAL_MODEL} 不存在")
     run(
         [
             "cargo", "run", "--release", "-p", "lingxi-convert", "--",
-            str(OLD_RESOURCES), str(OLD_MODELING), str(ASSETS),
+            str(CANONICAL_MODEL), str(ASSETS),
         ],
         cwd=ROOT,
     )

@@ -3,7 +3,7 @@
 //! 所有模型由 tools/lingxi-convert 離線從舊版 JSON 轉換；執行期只做
 //! postcard 反序列化，零 JSON 解析。機率一律為 f32 log 域。
 //!
-//! 資產檔格式：4 bytes magic "LXA1" + u16 LE version + u64 LE xxh3(payload) + payload。
+//! 資產檔格式：4 bytes magic "LXA2" + u16 LE version + u64 LE xxh3(payload) + payload。
 
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 
@@ -12,9 +12,9 @@ use serde::{de::DeserializeOwned, Deserialize, Serialize};
 pub const MIN_LOG: f32 = -1.0e30;
 
 /// 資產檔頭 magic。
-pub const ASSET_MAGIC: [u8; 4] = *b"LXA1";
+pub const ASSET_MAGIC: [u8; 4] = *b"LXA2";
 /// 資產格式版本，結構有不相容變更時遞增。
-pub const ASSET_VERSION: u16 = 1;
+pub const ASSET_VERSION: u16 = 2;
 
 /// BMES 狀態索引固定順序：B=0, M=1, E=2, S=3。
 pub const STATE_B: usize = 0;
@@ -62,7 +62,7 @@ pub struct DictModel {
     pub word_log_probs: Vec<f32>,
     /// 每個詞條的字元數（DP 時免重算）。
     pub word_char_lens: Vec<u8>,
-    /// ln(total_freq)：未登入單字的平滑基準（logp = ln(0.5) - total_log）。
+    /// ln(total_freq)：僅計入正頻率的多字詞條。
     pub total_log: f32,
     /// 異體字正規化映射（如 体→體、臺→台）；僅含 UTF-8 等長對，維持 byte offset 不變。
     pub variant_map: Vec<(char, char)>,
@@ -76,7 +76,7 @@ pub struct DictModel {
 /// 解碼採二階 Viterbi：複合狀態 (prev, cur) 共 16 態的標準 DP。
 #[derive(Serialize, Deserialize)]
 pub struct BmesModel {
-    /// emit / r_emit 共用的字元表（各來源字元集聯集）。
+    /// 發射機率共用的完整訓練字元表。
     pub chars: CharTable,
     /// 初始機率 log P(s0)。
     pub start: [f32; 4],
@@ -88,9 +88,10 @@ pub struct BmesModel {
     pub emit1: Vec<[f32; 4]>,
     /// 二階發射 log P(char | prev, cur)，每字元一列 [prev][cur]。
     pub emit2: Vec<[[f32; 4]; 4]>,
-    /// 首字狀態先驗 ln P(state | char)（由原始機率取 log；p=0 → MIN_LOG）。
-    /// 字元無此統計時，轉換階段已填入 start 值，執行期無須分支。
-    pub r_emit: Vec<[f32; 4]>,
+    /// 一階發射的 `<UNK>` 平滑機率，索引 [state]。
+    pub emit1_unknown: [f32; 4],
+    /// 二階發射的 `<UNK>` 平滑機率，索引 [prev][cur]。
+    pub emit2_unknown: [[f32; 4]; 4],
 }
 
 // ---------------------------------------------------------------------------
@@ -111,8 +112,10 @@ pub struct PosModel {
     pub tag_names: Vec<String>,
     /// 初始機率，長度 = 狀態數。
     pub start: Vec<f32>,
-    /// 轉移機率 dense [S*S]，索引 prev * S + cur。
-    pub trans: Vec<f32>,
+    /// 一階轉移機率 dense [S*S]，索引 prev * S + cur。
+    pub trans1: Vec<f32>,
+    /// 二階轉移機率 dense [S*S*S]，索引 (prev2 * S + prev1) * S + cur。
+    pub trans2: Vec<f32>,
     /// 發射 CSR 的字元表。
     pub chars: CharTable,
     /// CSR 列偏移，長度 = chars.len() + 1。
@@ -121,6 +124,16 @@ pub struct PosModel {
     pub emit_states: Vec<u16>,
     /// CSR：對應的發射 log 機率。
     pub emit_logps: Vec<f32>,
+    /// 每個 joint-state 的 `<UNK>` 發射平滑機率。
+    pub emit_unknown: Vec<f32>,
+    /// 詞彙 POS 自動機；pattern value 為詞彙列 id。
+    pub lexicon_automaton_bytes: Vec<u8>,
+    /// 詞彙列 CSR 偏移，長度 = 詞彙數 + 1。
+    pub lexicon_offsets: Vec<u32>,
+    /// 詞彙列中的 POS tag id。
+    pub lexicon_tags: Vec<u8>,
+    /// 完整 log P(tag | word)。
+    pub lexicon_logps: Vec<f32>,
 }
 
 impl PosModel {
@@ -142,6 +155,8 @@ impl PosModel {
 /// 資產解碼錯誤。
 #[derive(Debug)]
 pub enum AssetError {
+    /// 舊版 LXA1 資產；0.3.0 明確拒絕載入。
+    LegacyLxa1,
     /// 檔頭 magic 不符或檔案過短。
     BadMagic,
     /// 版本不符（附實際讀到的版本）。
@@ -155,7 +170,10 @@ pub enum AssetError {
 impl std::fmt::Display for AssetError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            AssetError::BadMagic => write!(f, "asset magic 不符（非 LXA1 資產檔）"),
+            AssetError::LegacyLxa1 => {
+                write!(f, "LXA1 資產不相容；請以 0.3.0 converter 重建 LXA2")
+            }
+            AssetError::BadMagic => write!(f, "asset magic 不符（非 LXA2 資產檔）"),
             AssetError::BadVersion(v) => {
                 write!(f, "asset 版本 {v} 與程式支援版本 {ASSET_VERSION} 不符")
             }
@@ -181,6 +199,9 @@ pub fn encode_asset<T: Serialize>(value: &T) -> Vec<u8> {
 
 /// 驗證檔頭並解碼資產。
 pub fn decode_asset<T: DeserializeOwned>(bytes: &[u8]) -> Result<T, AssetError> {
+    if bytes.len() >= 4 && bytes[0..4] == *b"LXA1" {
+        return Err(AssetError::LegacyLxa1);
+    }
     if bytes.len() < 14 || bytes[0..4] != ASSET_MAGIC {
         return Err(AssetError::BadMagic);
     }
@@ -194,4 +215,15 @@ pub fn decode_asset<T: DeserializeOwned>(bytes: &[u8]) -> Result<T, AssetError> 
         return Err(AssetError::BadHash);
     }
     postcard::from_bytes(payload).map_err(AssetError::Decode)
+}
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn lxa1_is_explicitly_rejected() {
+        let error = decode_asset::<u8>(b"LXA1\x01\x00legacy").unwrap_err();
+        assert!(matches!(error, AssetError::LegacyLxa1));
+        assert!(error.to_string().contains("LXA1"));
+    }
 }

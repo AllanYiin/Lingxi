@@ -1,15 +1,16 @@
 //! lingxi-core：繁體中文分詞引擎核心。
 //!
-//! 管線：預切塊 → 詞典 DAG+DP → 二階 BMES HMM（未登入詞）→ POS Viterbi（OOV 詞性）。
+//! 管線：pre hooks → 預切塊 → 詞典 DAG+DP → 二階 BMES HMM（未登入詞）→
+//! POS Viterbi（OOV 詞性）→ post hooks。
 //! 本 crate 只含演算法與模型載入，平行化與 I/O 由上層（CLI / bindings）負責。
 
 pub mod chunk;
 pub mod dag;
 pub mod dict;
-pub mod hmm;
 pub mod keyword;
 pub mod model;
 pub mod pos;
+pub mod rules;
 pub mod segment;
 pub mod userdict;
 
@@ -17,9 +18,13 @@ use std::path::Path;
 
 use chunk::ChunkKind;
 use dict::Dict;
-pub use keyword::Keyword;
+pub use keyword::{Keyword, KeywordOptions};
+pub use rules::{known_rules, RuleAction, RuleBucket, RuleInfo, RuleStatus, RuleTrace};
 pub use segment::{SegKind, Segment};
 pub use userdict::{parse_user_dict, UserDictEntry};
+
+/// 全量模型之外、由回歸測試確認的少量穩定邊界覆寫。
+const CURATED_DICTIONARY: &str = include_str!("curated_dict.txt");
 
 /// 帶詞性的分詞結果：原始輸入的 byte 區間 + 統一詞性表的 tag id。
 /// 詞字串由呼叫端以 `&text[byte_start..byte_end]` 取得（零拷貝），
@@ -43,17 +48,24 @@ struct BuiltinTags {
     unknown: u8,
 }
 
+struct PipelineScratch {
+    chunks: Vec<chunk::Chunk>,
+    segments: Vec<Segment>,
+}
+
 /// 分詞器：載入一次、多執行緒共享（`Send + Sync`，內部無可變狀態）。
 pub struct Segmenter {
     dict: Dict,
     bmes: model::BmesModel,
-    pos: model::PosModel,
+    pos: pos::PosTagger,
     /// 統一詞性名稱表：合併詞典詞性、POS 模型詞性與內建詞性。
     tags: Vec<String>,
     /// 詞典 tag id → 統一 tag id。
     dict_tag_map: Vec<u8>,
     /// POS 模型 tag id → 統一 tag id。
     pos_tag_map: Vec<u8>,
+    /// 詞典 tag id → POS 模型 tag id（runtime 詞典 lexical fallback）。
+    dict_to_pos: Vec<Option<u8>>,
     builtin: BuiltinTags,
 }
 
@@ -64,6 +76,7 @@ pub enum LoadError {
     Asset(model::AssetError),
     UserDict(String),
     TooManyTags(usize),
+    InvalidOptions(String),
 }
 
 impl std::fmt::Display for LoadError {
@@ -75,6 +88,7 @@ impl std::fmt::Display for LoadError {
             LoadError::TooManyTags(n) => {
                 write!(f, "統一詞性表共有 {n} 種，超過 u8 可表示的 256 種")
             }
+            LoadError::InvalidOptions(message) => write!(f, "無效的分詞器設定: {message}"),
         }
     }
 }
@@ -88,12 +102,11 @@ fn load_asset<T: serde::de::DeserializeOwned>(path: &Path) -> Result<T, LoadErro
 }
 
 impl Segmenter {
-    /// 從資產目錄載入（需含 dict.bin、hmm_bmes.bin、hmm_pos.bin）。
+    /// Load dict.bin, hmm_bmes.bin and hmm_pos.bin from an asset directory.
     pub fn from_asset_dir(dir: impl AsRef<Path>) -> Result<Self, LoadError> {
         Self::from_asset_dir_with_user_dict(dir, &[])
     }
 
-    /// 從資產目錄載入並附加自訂詞典（詞條見 `userdict` 模組）。
     pub fn from_asset_dir_with_user_dict(
         dir: impl AsRef<Path>,
         user_entries: &[UserDictEntry],
@@ -107,7 +120,6 @@ impl Segmenter {
         )
     }
 
-    /// 由已解碼的模型組裝（bindings 內嵌模型時的入口）。
     pub fn from_models(
         dict_model: model::DictModel,
         bmes: model::BmesModel,
@@ -116,8 +128,6 @@ impl Segmenter {
         Self::from_models_with_user_dict(dict_model, bmes, pos, &[])
     }
 
-    /// 由已解碼的模型組裝並附加自訂詞典。
-    /// 自訂詞典必須在此（統一詞性表建表前）載入，其新增詞性才會進表。
     pub fn from_models_with_user_dict(
         dict_model: model::DictModel,
         bmes: model::BmesModel,
@@ -125,32 +135,43 @@ impl Segmenter {
         user_entries: &[UserDictEntry],
     ) -> Result<Self, LoadError> {
         let mut dict = Dict::from_model(dict_model);
-        dict.install_user_dict(user_entries)
+        let mut dictionary_entries = parse_user_dict(CURATED_DICTIONARY);
+        dictionary_entries.extend_from_slice(user_entries);
+        dict.install_user_dict(&dictionary_entries)
             .map_err(LoadError::UserDict)?;
 
-        // 統一詞性表：字串為對齊介面，重複名稱共用同一 id。
         let mut tags: Vec<String> = Vec::new();
         let dict_tag_map: Vec<u8> = dict
             .tag_names
             .iter()
-            .map(|t| intern_tag(t, &mut tags))
+            .map(|tag| intern_tag(tag, &mut tags))
             .collect::<Result<_, _>>()?;
+        let dict_to_pos: Vec<Option<u8>> = dict
+            .tag_names
+            .iter()
+            .map(|tag| {
+                pos.tag_names
+                    .iter()
+                    .position(|candidate| candidate == tag)
+                    .map(|id| id as u8)
+            })
+            .collect();
         let pos_tag_map: Vec<u8> = pos
             .tag_names
             .iter()
-            .map(|t| intern_tag(t, &mut tags))
+            .map(|tag| intern_tag(tag, &mut tags))
             .collect::<Result<_, _>>()?;
         let builtin = BuiltinTags {
-            url: intern_tag("url", &mut tags)?,
-            email: intern_tag("email", &mut tags)?,
-            eng: intern_tag("eng", &mut tags)?,
-            num: intern_tag("m", &mut tags)?,
-            time: intern_tag("t", &mut tags)?,
-            punct: intern_tag("w", &mut tags)?,
-            other: intern_tag("x", &mut tags)?,
-            unknown: intern_tag("unknown", &mut tags)?,
+            url: intern_tag("FW", &mut tags)?,
+            email: intern_tag("FW", &mut tags)?,
+            eng: intern_tag("FW", &mut tags)?,
+            num: intern_tag("Neu", &mut tags)?,
+            time: intern_tag("Nd", &mut tags)?,
+            punct: intern_tag("PUNCTUATIONCATEGORY", &mut tags)?,
+            other: intern_tag("FW", &mut tags)?,
+            unknown: intern_tag("FW", &mut tags)?,
         };
-
+        let pos = pos::PosTagger::new(pos).map_err(LoadError::InvalidOptions)?;
         Ok(Segmenter {
             dict,
             bmes,
@@ -158,6 +179,7 @@ impl Segmenter {
             tags,
             dict_tag_map,
             pos_tag_map,
+            dict_to_pos,
             builtin,
         })
     }
@@ -181,34 +203,61 @@ impl Segmenter {
             .collect()
     }
 
+    /// 分詞並回傳實際觸發的規則 trace。
+    pub fn cut_with_trace<'a>(&self, text: &'a str) -> (Vec<&'a str>, Vec<RuleTrace>) {
+        let (segments, trace) = self.cut_segments_with_trace(text);
+        (
+            segments
+                .into_iter()
+                .map(|s| &text[s.byte_start..s.byte_end])
+                .collect(),
+            trace,
+        )
+    }
+
     /// 分詞：回傳帶 byte 區間與種類的詞段。
     pub fn cut_segments(&self, text: &str) -> Vec<Segment> {
+        self.cut_segments_with_trace(text).0
+    }
+
+    /// 分詞並回傳帶 byte 區間的規則 trace。
+    pub fn cut_segments_with_trace(&self, text: &str) -> (Vec<Segment>, Vec<RuleTrace>) {
         let normalized = self.dict.normalize(text);
-        self.cut_normalized(&normalized)
+        self.cut_normalized_with_trace(&normalized)
     }
 
     /// 分詞＋詞性標註。
     pub fn tokenize(&self, text: &str) -> Vec<Token> {
+        self.tokenize_with_trace(text).0
+    }
+
+    /// 分詞＋詞性標註，並回傳實際觸發的規則 trace。
+    pub fn tokenize_with_trace(&self, text: &str) -> (Vec<Token>, Vec<RuleTrace>) {
         let normalized = self.dict.normalize(text);
-        self.cut_normalized(&normalized)
+        let (segments, trace) = self.cut_normalized_with_trace(&normalized);
+        let tags = self.tag_segments(&normalized, &segments);
+        let tokens = segments
             .into_iter()
-            .map(|s| Token {
-                byte_start: s.byte_start,
-                byte_end: s.byte_end,
-                tag: self.tag_of(&normalized, &s),
+            .zip(tags)
+            .map(|(segment, tag)| Token {
+                byte_start: segment.byte_start,
+                byte_end: segment.byte_end,
+                tag,
             })
-            .collect()
+            .collect();
+        (tokens, trace)
     }
 
     /// 主管線（輸入須已正規化）。
-    fn cut_normalized(&self, normalized: &str) -> Vec<Segment> {
+    fn cut_normalized_with_trace(&self, normalized: &str) -> (Vec<Segment>, Vec<RuleTrace>) {
         let mut out = Vec::with_capacity(normalized.len() / 4);
-        let mut chunks = Vec::new();
-        let mut scratch: Vec<Segment> = Vec::new();
+        let mut scratch = PipelineScratch {
+            chunks: Vec::new(),
+            segments: Vec::new(),
+        };
+        let mut trace = Vec::new();
 
-        // 一般預切塊會把 ASCII/數字與 Han 分開；先保護真正跨邊界的詞典詞，
-        // 讓「AV女優」「90後」與同類 userdict 詞條仍可命中。其餘區段維持
-        // 原本 chunk → DAG → HMM 管線，避免把任意英中混合文字送進中文 HMM。
+        // 先保護跨 ASCII/Han 邊界的詞典詞，其餘區段再走一般 pre hooks。
         let anchors = self.mixed_dict_anchors(normalized);
         let mut cursor = 0usize;
         for anchor in anchors {
@@ -216,10 +265,17 @@ impl Segmenter {
                 normalized,
                 cursor,
                 anchor.byte_start,
-                &mut chunks,
                 &mut scratch,
                 &mut out,
+                &mut trace,
             );
+            trace.push(RuleTrace {
+                rule_id: rules::PRE_MIXED_DICT_ANCHOR,
+                bucket: RuleBucket::Pre,
+                action: RuleAction::Protect,
+                byte_start: anchor.byte_start,
+                byte_end: anchor.byte_end,
+            });
             out.push(anchor);
             cursor = anchor.byte_end;
         }
@@ -227,11 +283,16 @@ impl Segmenter {
             normalized,
             cursor,
             normalized.len(),
-            &mut chunks,
             &mut scratch,
             &mut out,
+            &mut trace,
         );
-        out
+
+        // Post hooks are surface-form/deterministic only. POS runs after these
+        // boundaries are final and therefore cannot participate in segmentation.
+        let post_tags = vec![rules::PostTag::Other; out.len()];
+        rules::apply_post_hooks(normalized, &mut out, &post_tags, &mut trace);
+        (out, trace)
     }
 
     /// 找出跨 ASCII/Han 邊界的詞典詞，採左至右最長匹配並以機率破同長平手。
@@ -281,28 +342,32 @@ impl Segmenter {
         normalized: &str,
         start: usize,
         end: usize,
-        chunks: &mut Vec<chunk::Chunk>,
-        scratch: &mut Vec<Segment>,
+        scratch: &mut PipelineScratch,
         out: &mut Vec<Segment>,
+        trace: &mut Vec<RuleTrace>,
     ) {
         if start >= end {
             return;
         }
-        chunks.clear();
-        chunk::split(&normalized[start..end], chunks);
-        for ch in chunks.iter() {
+        scratch.chunks.clear();
+        let trace_start = trace.len();
+        chunk::split_with_trace(&normalized[start..end], &mut scratch.chunks, trace);
+        for item in &mut trace[trace_start..] {
+            item.byte_start += start;
+            item.byte_end += start;
+        }
+        for ch in scratch.chunks.iter() {
             let byte_start = start + ch.byte_start;
             let byte_end = start + ch.byte_end;
             match ch.kind {
                 ChunkKind::Han => {
-                    scratch.clear();
-                    dag::cut_dag(
-                        &self.dict,
-                        &normalized[byte_start..byte_end],
+                    self.cut_han_chunk(
+                        normalized,
                         byte_start,
-                        scratch,
+                        byte_end,
+                        &mut scratch.segments,
+                        out,
                     );
-                    self.merge_oov_runs(normalized, scratch, out);
                 }
                 kind => out.push(Segment {
                     byte_start,
@@ -313,73 +378,73 @@ impl Segmenter {
         }
     }
 
-    /// 詞段 → 統一詞性 id。
-    fn tag_of(&self, normalized: &str, seg: &Segment) -> u8 {
-        match seg.kind {
-            SegKind::Dict(id) => self.dict_tag_map[self.dict.tag(id) as usize],
-            SegKind::Oov => {
-                let word = &normalized[seg.byte_start..seg.byte_end];
-                pos::tag_oov(&self.pos, word)
-                    .map(|t| self.pos_tag_map[t as usize])
-                    .unwrap_or(self.builtin.unknown)
-            }
-            SegKind::Url => self.builtin.url,
-            SegKind::Email => self.builtin.email,
-            SegKind::Eng => self.builtin.eng,
-            SegKind::Num => self.builtin.num,
-            SegKind::Time => self.builtin.time,
-            SegKind::Punct => self.builtin.punct,
-            SegKind::Space | SegKind::Other => self.builtin.other,
-        }
+    fn cut_han_chunk(
+        &self,
+        normalized: &str,
+        byte_start: usize,
+        byte_end: usize,
+        _scratch_segments: &mut Vec<Segment>,
+        out: &mut Vec<Segment>,
+    ) {
+        dag::cut_viterbi(
+            &self.dict,
+            &self.bmes,
+            &normalized[byte_start..byte_end],
+            byte_start,
+            out,
+        );
     }
 
-    /// 對 DAG 輸出做 jieba 式未登入詞合併：連續 ≥2 個單字詞段
-    /// （不論是否詞典單字）合併丟給二階 HMM 重切，其餘原樣輸出。
-    fn merge_oov_runs(&self, normalized: &str, segs: &[Segment], out: &mut Vec<Segment>) {
-        let is_single = |s: &Segment| {
-            let t = &normalized[s.byte_start..s.byte_end];
-            t.chars()
-                .next()
-                .map(|c| c.len_utf8() == t.len())
-                .unwrap_or(false)
-        };
-        let mut run_start = 0usize; // 進行中單字 run 的起始索引
-        let mut run_len = 0usize;
-        for (i, seg) in segs.iter().enumerate() {
-            if is_single(seg) {
-                if run_len == 0 {
-                    run_start = i;
-                }
-                run_len += 1;
-            } else {
-                self.flush_run(normalized, &segs[run_start..run_start + run_len], out);
-                run_len = 0;
-                out.push(*seg);
+    /// 在固定詞界上執行 POS；非 Han 保護區段維持確定性詞性。
+    fn tag_segments(&self, normalized: &str, segments: &[Segment]) -> Vec<u8> {
+        let mut tags = vec![self.builtin.unknown; segments.len()];
+        let mut cursor = 0usize;
+        while cursor < segments.len() {
+            if let Some(tag) = self.fixed_tag(&segments[cursor]) {
+                tags[cursor] = tag;
+                cursor += 1;
+                continue;
+            }
+            let start = cursor;
+            while cursor < segments.len() && self.fixed_tag(&segments[cursor]).is_none() {
+                cursor += 1;
+            }
+            let run = &segments[start..cursor];
+            let words: Vec<&str> = run
+                .iter()
+                .map(|segment| &normalized[segment.byte_start..segment.byte_end])
+                .collect();
+            let fallback: Vec<Option<u8>> = run
+                .iter()
+                .map(|segment| match segment.kind {
+                    SegKind::Dict(id) if self.dict.is_user(id) => {
+                        self.dict_to_pos[self.dict.tag(id) as usize]
+                    }
+                    _ => None,
+                })
+                .collect();
+            for (offset, tag) in self.pos.tag_run(&words, &fallback).into_iter().enumerate() {
+                tags[start + offset] = match run[offset].kind {
+                    SegKind::Dict(id) if self.dict_to_pos[self.dict.tag(id) as usize].is_none() => {
+                        self.dict_tag_map[self.dict.tag(id) as usize]
+                    }
+                    _ => self.pos_tag_map[tag as usize],
+                };
             }
         }
-        self.flush_run(normalized, &segs[run_start..run_start + run_len], out);
+        tags
     }
 
-    /// 收尾一段單字 run：長度 ≥2 走 HMM；恰為詞典整詞時尊重 DP 的逐字選擇。
-    fn flush_run(&self, normalized: &str, run: &[Segment], out: &mut Vec<Segment>) {
-        match run.len() {
-            0 => {}
-            1 => out.push(run[0]),
-            _ => {
-                let a = run[0].byte_start;
-                let b = run[run.len() - 1].byte_end;
-                let run_str = &normalized[a..b];
-                // 整串本身是詞典詞 → DP 刻意選了逐字路徑，不再合併。
-                let whole_is_word = self
-                    .dict
-                    .matches(run_str)
-                    .any(|m| m.byte_start == 0 && m.byte_end == run_str.len());
-                if whole_is_word {
-                    out.extend_from_slice(run);
-                } else {
-                    hmm::viterbi_cut(&self.bmes, run_str, a, out);
-                }
-            }
+    fn fixed_tag(&self, segment: &Segment) -> Option<u8> {
+        match segment.kind {
+            SegKind::Dict(_) | SegKind::Oov => None,
+            SegKind::Url => Some(self.builtin.url),
+            SegKind::Email => Some(self.builtin.email),
+            SegKind::Eng => Some(self.builtin.eng),
+            SegKind::Num => Some(self.builtin.num),
+            SegKind::Time => Some(self.builtin.time),
+            SegKind::Punct => Some(self.builtin.punct),
+            SegKind::Space | SegKind::Other => Some(self.builtin.other),
         }
     }
 }

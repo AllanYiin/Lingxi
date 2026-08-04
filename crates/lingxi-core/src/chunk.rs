@@ -1,13 +1,11 @@
 //! 預切塊：把輸入依字元類別與規則切成「待分詞的中文塊」與「直接定案的詞段」。
 //!
-//! 規則刻意保守：只有 ASCII 錨定的樣式（URL、email、英數串、數字、
-//! 「2014年」型時間詞）強制成段；中文數字與量詞序列留在 Han 塊內，
-//! 由 DAG+HMM 依詞典機率決定（避免規則搶走「一起」「十分」等真詞）。
-//! 所有 regex 以 LazyLock 靜態編譯一次（舊版在迴圈內 new Regex 是主要效能坑）。
+//! 規則刻意保守：只有 rules registry 找到的受保護 span 與一般英數串直接成段；
+//! 中文數字與量詞序列留在 Han 塊內，由 DAG+HMM 依詞典機率決定，
+//! 避免規則搶走「一起」「十分」等真詞。
+//! 可增減的特殊規則集中在 rules 模組，不在這個掃描器內逐條堆疊。
 
-use std::sync::LazyLock;
-
-use regex::Regex;
+use crate::rules::{self, RuleAction, RuleBucket, RuleTrace};
 
 /// 塊種類：Han 需進 DAG 分詞，其餘直接定案。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -31,27 +29,6 @@ pub struct Chunk {
     pub byte_end: usize,
     pub kind: ChunkKind,
 }
-
-/// Email 樣式（改寫自舊版 Constants.RegexEmail，去除 .NET (?n:) 模式）。
-static EMAIL_RE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(
-        r"(?i)[a-z0-9_\-.]+@(\[[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.|([a-z0-9\-]+\.)+)([a-z][a-z0-9\-]{1,62}|[0-9]{1,3})\]?",
-    )
-    .unwrap()
-});
-
-/// URL 樣式（改寫自舊版 Constants.RegexUrl；容許無 scheme 的裸網域）。
-static URL_RE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(concat!(
-        r"(?i)(https?://|ftps?://)?",
-        r"(([0-9a-z_!~*'().&=+$%\-]+: )?[0-9a-z_!~*'().&=+$%\-]+@)?",
-        r"(([0-9]{1,3}\.){3}[0-9]{1,3}",
-        r"|([0-9a-z_!~*'()\-]+\.)*([0-9a-z][0-9a-z\-]{0,61})?[0-9a-z]\.[a-z][a-z0-9\-]{1,62})",
-        r"(:[0-9]{1,4})?",
-        r"(/[0-9a-z_!~*'().;?:@&=+$,%#\-]+)*/?",
-    ))
-    .unwrap()
-});
 
 /// 字元大類（走訪期間用）。
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -90,51 +67,32 @@ pub(crate) fn is_han_char(c: char) -> bool {
     char_class(c) == CharClass::Han
 }
 
-/// 時間詞後綴單位（舊版 RegexTime 的 [年月日號]）。
-fn is_time_unit(c: char) -> bool {
-    matches!(c, '年' | '月' | '日' | '號')
-}
-
 /// 對整段文字做預切塊。輸入須為正規化後文字；`out` 依序收到不重疊、
 /// 覆蓋全文的塊。
 pub fn split(text: &str, out: &mut Vec<Chunk>) {
-    // 快速路徑：無 ASCII 英數者不可能有 URL/email，跳過 regex 掃描。
-    let has_ascii = text.bytes().any(|b| b.is_ascii_alphanumeric());
+    split_with_trace(text, out, &mut Vec::new());
+}
 
-    // 受保護區間：email 優先於 URL（URL 樣式會吃掉 email 的網域部分）。
-    let mut protected: Vec<(usize, usize, ChunkKind)> = Vec::new();
-    if has_ascii {
-        if text.bytes().any(|b| b == b'@') {
-            for m in EMAIL_RE.find_iter(text) {
-                protected.push((m.start(), m.end(), ChunkKind::Email));
-            }
-        }
-        if text.bytes().any(|b| b == b'.') {
-            for m in URL_RE.find_iter(text) {
-                // 與 email 重疊者略過；長度 < 4 的裸匹配（如 "a.b"）不視為網址。
-                let overlaps = protected
-                    .iter()
-                    .any(|&(s, e, _)| m.start() < e && s < m.end());
-                if !overlaps && m.end() - m.start() >= 4 {
-                    protected.push((m.start(), m.end(), ChunkKind::Url));
-                }
-            }
-            protected.sort_by_key(|&(s, _, _)| s);
-        }
-    }
-
-    // 依受保護區間切出空隙，空隙內做字元類別走訪。
+pub(crate) fn split_with_trace(text: &str, out: &mut Vec<Chunk>, trace: &mut Vec<RuleTrace>) {
+    let protected = rules::collect_pre_matches(text);
     let mut cursor = 0usize;
-    for &(s, e, kind) in &protected {
-        if cursor < s {
-            scan_plain(&text[cursor..s], cursor, out);
+    for protected_match in protected {
+        if cursor < protected_match.byte_start {
+            scan_plain(&text[cursor..protected_match.byte_start], cursor, out);
         }
         out.push(Chunk {
-            byte_start: s,
-            byte_end: e,
-            kind,
+            byte_start: protected_match.byte_start,
+            byte_end: protected_match.byte_end,
+            kind: protected_match.kind,
         });
-        cursor = e;
+        trace.push(RuleTrace {
+            rule_id: protected_match.rule_id,
+            bucket: RuleBucket::Pre,
+            action: RuleAction::Protect,
+            byte_start: protected_match.byte_start,
+            byte_end: protected_match.byte_end,
+        });
+        cursor = protected_match.byte_end;
     }
     if cursor < text.len() {
         scan_plain(&text[cursor..], cursor, out);
@@ -169,26 +127,7 @@ fn scan_plain(text: &str, base: usize, out: &mut Vec<Chunk>) {
                 }
                 let mut kind = ChunkKind::Eng;
                 if all_digits {
-                    // 小數/千分位：數字 [./,] 數字 反覆延伸（如 3.14、1,000）。
-                    while j < n
-                        && matches!(chars[j].1, '.' | ',')
-                        && j + 1 < n
-                        && chars[j + 1].1.is_ascii_digit()
-                    {
-                        j += 1;
-                        while j < n && chars[j].1.is_ascii_digit() {
-                            j += 1;
-                        }
-                    }
                     kind = ChunkKind::Num;
-                    // 時間詞：數字後接 [個]?[年月日號]（如 2014年、3個月）。
-                    if j < n && is_time_unit(chars[j].1) {
-                        j += 1;
-                        kind = ChunkKind::Time;
-                    } else if j + 1 < n && chars[j].1 == '個' && is_time_unit(chars[j + 1].1) {
-                        j += 2;
-                        kind = ChunkKind::Time;
-                    }
                 }
                 out.push(Chunk {
                     byte_start: base + start_byte,
@@ -284,12 +223,39 @@ mod tests {
     }
 
     #[test]
-    fn digits_with_time_unit_become_time() {
-        let r = kinds_and_texts("2014年開始的3個月內漲了1,000點又3.5%");
+    fn digits_with_time_unit_and_percent_are_kept_whole() {
+        let r = kinds_and_texts("2014年開始的3個月內漲了1,000點，15%又3.5%，全形70％");
         assert!(r.contains(&(ChunkKind::Time, "2014年".into())), "{r:?}");
         assert!(r.contains(&(ChunkKind::Time, "3個月".into())), "{r:?}");
         assert!(r.contains(&(ChunkKind::Num, "1,000".into())), "{r:?}");
-        assert!(r.contains(&(ChunkKind::Num, "3.5".into())), "{r:?}");
+        assert!(r.contains(&(ChunkKind::Num, "15%".into())), "{r:?}");
+        assert!(r.contains(&(ChunkKind::Num, "3.5%".into())), "{r:?}");
+        assert!(r.contains(&(ChunkKind::Num, "70％".into())), "{r:?}");
+    }
+
+    #[test]
+    fn ordinal_period_stops_han_words_from_crossing_its_boundary() {
+        let r = kinds_and_texts("特斯拉第2季資本支出");
+        assert_eq!(
+            r,
+            vec![
+                (ChunkKind::Han, "特斯拉".into()),
+                (ChunkKind::Time, "第2季".into()),
+                (ChunkKind::Han, "資本支出".into()),
+            ]
+        );
+    }
+
+    #[test]
+    fn ascii_digits_absorb_chinese_magnitude_but_not_currency() {
+        let r = kinds_and_texts("1200億美元");
+        assert_eq!(
+            r,
+            vec![
+                (ChunkKind::Num, "1200億".into()),
+                (ChunkKind::Han, "美元".into()),
+            ]
+        );
     }
 
     #[test]

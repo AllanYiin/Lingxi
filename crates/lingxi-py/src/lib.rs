@@ -28,7 +28,10 @@ struct Token {
 #[pymethods]
 impl Token {
     fn __repr__(&self) -> String {
-        format!("Token({:?}, {:?}, {}, {})", self.word, self.tag, self.start, self.end)
+        format!(
+            "Token({:?}, {:?}, {}, {})",
+            self.word, self.tag, self.start, self.end
+        )
     }
 }
 
@@ -51,22 +54,42 @@ impl Segmenter {
             .unwrap_or_default();
         lingxi_core::Segmenter::from_asset_dir_with_user_dict(asset_dir, &entries)
             .map(|inner| Segmenter { inner })
-            .map_err(|e| PyValueError::new_err(e.to_string()))
+            .map_err(|error| PyValueError::new_err(error.to_string()))
     }
 
     /// TextRank 關鍵字抽取 → [(詞, 權重)]，權重降冪。
     /// `allow_tags` 指定候選詞性白名單；預設為名詞類/動詞/英文詞。
-    #[pyo3(signature = (text, top_k=20, allow_tags=None))]
+    #[pyo3(signature = (
+        text,
+        top_k=20,
+        allow_tags=None,
+        proper_noun_enabled=true,
+        proper_noun_weight=0.25,
+        proper_noun_max_ratio=0.4
+    ))]
     fn extract_keywords(
         &self,
         text: &str,
         top_k: usize,
         allow_tags: Option<Vec<String>>,
+        proper_noun_enabled: bool,
+        proper_noun_weight: f32,
+        proper_noun_max_ratio: f32,
     ) -> Vec<(String, f32)> {
-        let tag_refs: Option<Vec<&str>> =
-            allow_tags.as_ref().map(|v| v.iter().map(String::as_str).collect());
+        let tag_refs: Option<Vec<&str>> = allow_tags
+            .as_ref()
+            .map(|v| v.iter().map(String::as_str).collect());
         self.inner
-            .extract_keywords_with(text, top_k, tag_refs.as_deref())
+            .extract_keywords_with_options(
+                text,
+                top_k,
+                tag_refs.as_deref(),
+                lingxi_core::KeywordOptions {
+                    proper_noun_enabled,
+                    proper_noun_weight,
+                    proper_noun_max_ratio,
+                },
+            )
             .into_iter()
             .map(|k| (k.word, k.weight))
             .collect()
@@ -74,7 +97,11 @@ impl Segmenter {
 
     /// 分詞 → 詞列表。
     fn cut(&self, text: &str) -> Vec<String> {
-        self.inner.cut(text).into_iter().map(str::to_string).collect()
+        self.inner
+            .cut(text)
+            .into_iter()
+            .map(str::to_string)
+            .collect()
     }
 
     /// 分詞＋詞性 → Token 列表（start/end 為字元座標）。
@@ -94,7 +121,12 @@ impl Segmenter {
 
     /// 批次分詞＋詞性：釋放 GIL 並以 rayon 平行。
     fn tokenize_batch(&self, py: Python<'_>, texts: Vec<String>) -> Vec<Vec<Token>> {
-        py.allow_threads(|| texts.par_iter().map(|t| tokens_of(&self.inner, t)).collect())
+        py.allow_threads(|| {
+            texts
+                .par_iter()
+                .map(|t| tokens_of(&self.inner, t))
+                .collect()
+        })
     }
 }
 

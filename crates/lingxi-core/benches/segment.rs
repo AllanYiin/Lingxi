@@ -16,11 +16,18 @@ fn bench_segment(c: &mut Criterion) {
             return;
         }
     };
-    // 長文：段落重覆到約 50KB。
-    let long: String = PARA.repeat(50_000 / PARA.len() + 1);
+    let long_10k: String = PARA.chars().cycle().take(10_000).collect();
+    let long_20k: String = PARA.chars().cycle().take(20_000).collect();
+    let long_40k: String = PARA.chars().cycle().take(40_000).collect();
 
     let mut group = c.benchmark_group("cut");
-    for (name, text) in [("short_17chars", SHORT), ("para_250chars", PARA), ("long_50kb", long.as_str())] {
+    for (name, text) in [
+        ("short_17chars", SHORT),
+        ("para_250chars", PARA),
+        ("long_10k_chars", long_10k.as_str()),
+        ("long_20k_chars", long_20k.as_str()),
+        ("long_40k_chars", long_40k.as_str()),
+    ] {
         group.throughput(Throughput::Bytes(text.len() as u64));
         group.bench_function(name, |b| b.iter(|| seg.cut(std::hint::black_box(text))));
     }
@@ -28,7 +35,9 @@ fn bench_segment(c: &mut Criterion) {
 
     let mut group = c.benchmark_group("tokenize");
     group.throughput(Throughput::Bytes(PARA.len() as u64));
-    group.bench_function("para_250chars", |b| b.iter(|| seg.tokenize(std::hint::black_box(PARA))));
+    group.bench_function("para_250chars", |b| {
+        b.iter(|| seg.tokenize(std::hint::black_box(PARA)))
+    });
     group.finish();
 }
 

@@ -6,7 +6,10 @@ use lingxi_core::Segmenter;
 
 fn load() -> Option<Segmenter> {
     let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/../../assets");
-    Segmenter::from_asset_dir(dir).ok()
+    if !std::path::Path::new(dir).join("dict.bin").exists() {
+        return None;
+    }
+    Some(Segmenter::from_asset_dir(dir).expect("assets 存在但不是有效 LXA2 模型"))
 }
 
 #[test]
@@ -18,7 +21,10 @@ fn cuts_common_taiwan_sentence() {
     let words = seg.cut("金管會前主委參加台北市政府的記者會");
     // 不錨定完整切分（模型演進會變），只驗證關鍵詞邊界存在。
     assert!(words.contains(&"金管會"), "實際切分: {words:?}");
-    assert!(words.contains(&"台北市政府") || words.contains(&"台北市"), "實際切分: {words:?}");
+    assert!(
+        words.contains(&"台北市政府") || words.contains(&"台北市"),
+        "實際切分: {words:?}"
+    );
     assert!(words.contains(&"記者會"), "實際切分: {words:?}");
     // 全部詞段串回必須等於原文（無字元遺漏或重複）。
     assert_eq!(words.concat(), "金管會前主委參加台北市政府的記者會");
@@ -31,7 +37,10 @@ fn variant_normalization_still_slices_original() {
     let text = "我住在臺北市";
     let words = seg.cut(text);
     assert_eq!(words.concat(), text);
-    assert!(words.iter().any(|w| w.contains('臺')), "實際切分: {words:?}");
+    assert!(
+        words.iter().any(|w| w.contains('臺')),
+        "實際切分: {words:?}"
+    );
 }
 
 #[test]
@@ -42,7 +51,10 @@ fn mixed_text_with_url_email_time() {
     assert_eq!(words.concat(), text, "詞段必須完整覆蓋原文");
     assert!(words.contains(&"2014年"), "實際切分: {words:?}");
     assert!(words.contains(&"service@gmail.com"), "實際切分: {words:?}");
-    assert!(words.contains(&"https://www.ptt.cc/bbs/Gossiping"), "實際切分: {words:?}");
+    assert!(
+        words.contains(&"https://www.ptt.cc/bbs/Gossiping"),
+        "實際切分: {words:?}"
+    );
     assert!(words.contains(&"！"), "實際切分: {words:?}");
 }
 
@@ -56,11 +68,15 @@ fn tokenize_assigns_reasonable_tags() {
         .map(|t| (&text[t.byte_start..t.byte_end], seg.tag_name(t.tag)))
         .collect();
     let tag_of = |w: &str| tagged.iter().find(|(x, _)| *x == w).map(|(_, t)| *t);
-    assert_eq!(tag_of("2014年"), Some("t"), "全部: {tagged:?}");
-    assert_eq!(tag_of("service@gmail.com"), Some("email"), "全部: {tagged:?}");
-    assert_eq!(tag_of("！"), Some("w"), "全部: {tagged:?}");
-    // 「陳先生」被 HMM 合併為人名，POS Viterbi 應標為 nr。
-    assert_eq!(tag_of("陳先生"), Some("nr"), "全部: {tagged:?}");
+    assert_eq!(tag_of("2014年"), Some("Nd"), "全部: {tagged:?}");
+    assert_eq!(tag_of("service@gmail.com"), Some("FW"), "全部: {tagged:?}");
+    assert_eq!(
+        tag_of("！"),
+        Some("PUNCTUATIONCATEGORY"),
+        "全部: {tagged:?}"
+    );
+    // 「陳先生」由穩定邊界覆寫保護，詞性使用 CKIP 專有名詞 Nb。
+    assert_eq!(tag_of("陳先生"), Some("Nb"), "全部: {tagged:?}");
 }
 
 #[test]
@@ -86,9 +102,22 @@ fn hmm_merges_oov_name_run() {
     let text = "警方逮捕了郝翊晟與同夥";
     let words = seg.cut(text);
     assert_eq!(words.concat(), text);
-    let name_zone: Vec<&&str> = words.iter().filter(|w| w.contains('郝') || w.contains('翊')).collect();
+    let name_zone: Vec<&&str> = words
+        .iter()
+        .filter(|w| w.contains('郝') || w.contains('翊'))
+        .collect();
     assert!(
         name_zone.iter().any(|w| w.chars().count() >= 2),
         "HMM 未合併任何人名字元, 實際切分: {words:?}"
     );
+}
+#[test]
+fn granularity_regressions_are_exact() {
+    let Some(seg) = load() else { return };
+    assert_eq!(
+        seg.cut("結婚的和尚未結婚的人"),
+        vec!["結婚", "的", "和", "尚未", "結婚", "的", "人"]
+    );
+    assert_eq!(seg.cut("長榮航空公司"), vec!["長榮航空公司"]);
+    assert_eq!(seg.cut("軟體工程師"), vec!["軟體", "工程師"]);
 }
