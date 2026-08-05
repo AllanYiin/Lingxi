@@ -1,0 +1,54 @@
+schema_version = 1
+
+[workspace]
+directory = ".corpus-work"
+seed = 20260728
+
+[[sources]]
+id = "twllm_real_prompts"
+adapter = "twllm_real_prompts"
+dataset = "yentinglin/twllm-data"
+config = "20250216"
+split = "train"
+revision = "027f9f20c0d80d3695e1477c874ca9f102eccb68"
+license = "Apache-2.0"
+license_url = "https://huggingface.co/datasets/yentinglin/twllm-data"
+target_count = 900
+notes = "Only dataset=v1log-geminipro and role=human are retained; model answers and synthetic subsets are excluded."
+
+[[sources]]
+id = "tw_law_current"
+adapter = "tw_law_current"
+dataset = "lianghsun/tw-processed-law-article"
+config = "default"
+split = "train"
+revision = "d830545ad39d1fb2d94a3dae3ef9b5a701e021a4"
+license = "CC-BY-4.0"
+license_url = "https://huggingface.co/datasets/lianghsun/tw-processed-law-article"
+target_count = 700
+notes = "Only currently effective articles whose abandon_note is empty are retained."
+
+[[sources]]
+id = "taiwan_patent_exam"
+adapter = "taiwan_patent_exam"
+dataset = "Heng666/Taiwan-patent-qa-eval"
+config = "default"
+split = "train"
+revision = "7d2a13faf437c605644404233418fd5260dd17e6"
+license = "Apache-2.0"
+license_url = "https://huggingface.co/datasets/Heng666/Taiwan-patent-qa-eval"
+target_count = 300
+notes = "Questions and choices from Taiwan patent-agent exams; all fields from one question stay in the same split."
+
+
+[[sources]]
+id = "wikinews_tw"
+adapter = "wikinews_tw"
+dataset = "erhwenkuo/wikinews-zhtw"
+config = "20231001"
+split = "train"
+revision = "f6782f89259b3451d8a82e1b3a027804204a6dac"
+license = "CC-BY-SA-3.0"
+license_url = "https://huggingface.co/datasets/erhwenkuo/wikinews-zhtw"
+target_count = 100
+notes = "Taiwan-keyword subset; unresolved MediaWiki conversion markup is rejected."

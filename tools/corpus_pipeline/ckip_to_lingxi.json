@@ -1,0 +1,63 @@
+{
+  "schema_version": 1,
+  "exact": {
+    "A": "a",
+    "Caa": "c",
+    "Cab": "c",
+    "Cba": "c",
+    "Cbb": "c",
+    "D": "d",
+    "I": "e",
+    "Na": "n",
+    "Nd": "t",
+    "Neu": "m",
+    "Nf": "q",
+    "Nh": "r",
+    "Nv": "vn",
+    "P": "p",
+    "V_2": "v",
+    "FW": "x"
+  },
+  "broad": {
+    "Da": "d",
+    "Dfa": "d",
+    "Dfb": "d",
+    "Dk": "d",
+    "Nc": "ns",
+    "Ncd": "s",
+    "Nep": "r",
+    "Neqa": "m",
+    "Neqb": "m",
+    "Nes": "r",
+    "SHI": "v",
+    "T": "u",
+    "VA": "v",
+    "VAC": "v",
+    "VB": "v",
+    "VC": "v",
+    "VCL": "v",
+    "VD": "v",
+    "VE": "v",
+    "VF": "v",
+    "VG": "v",
+    "VI": "v",
+    "VJ": "v",
+    "VK": "v",
+    "VL": "v"
+  },
+  "ambiguous": {
+    "DE": ["uj", "ud", "uv"],
+    "Di": ["u", "d"],
+    "DM": ["m", "d"],
+    "Nb": ["nr", "ns", "nt", "nz"],
+    "Ng": ["f", "u"],
+    "VH": ["a", "v"],
+    "VHC": ["a", "v"]
+  },
+  "skip_prefixes": [
+    "COLONCATEGORY", "COMMACATEGORY", "DASHCATEGORY", "ETCCATEGORY",
+    "EXCLAMATIONCATEGORY", "PARENTHESISCATEGORY", "PAUSECATEGORY",
+    "PERIODCATEGORY", "QUESTIONCATEGORY", "SEMICOLONCATEGORY",
+    "SPCHANGECATEGORY", "WHITESPACE"
+  ]
+}
