@@ -174,11 +174,6 @@ Rust 可用 `SegmenterOptions { custom_lexicons }` 搭配 `from_asset_dir_with_o
 | jieba 0.42.1 | 74.76% | 765.93 ms | 69.89% | 199,887.94 ms | 52.21% |
 | LingXi 0.3.0 | **86.34%** | **291.00 ms** | **93.80%** | **963.00 ms** | **79.79%** |
 
-分詞正確性以 Trident BMES 詞界計算 micro Word F1。Trident 未提供本比較所需的 CKIP 詞性 gold，因此詞性評測使用同一批句子的 CKIPTagger WS＋POS silver annotations（164,109 tokens），並排除標點；「共同 POS accuracy」只計算 gold 與預測詞界完全對齊的實詞 token，再把 CKIP 與 jieba 標籤映射到共同 tag set。「詞界＋POS F1」則同時懲罰詞界和詞性錯誤，較能反映端到端結果。silver annotations 未經逐筆人工覆核，不應視為人工 gold benchmark。
-
-兩種模式皆先暖機，再完整執行 3 次並取處理時間中位數；資料集與模型載入時間不計。分詞時間只含分詞；詞性時間為分詞＋POS 的端到端時間。LingXi 數字來自 release CLI 回報的處理時間（含輸出序列化），jieba 則在同一 Python 行程內以 `cut(cut_all=False, HMM=True)`／`posseg.cut(HMM=True)` 執行。不同硬體、模型資產與執行環境的時間不可直接互比。
-
-內部維護者備妥 `assets/`、0.2.2 對照包與 `.corpus-work/model-evaluation/trident-test-ckip-gold.jsonl` 後，可重現本次報告：
 
 ```bash
 python corpus/compare_022_030_jieba.py \
