@@ -1,0 +1,12 @@
+{
+  "name": "lingxi-dict-editor",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "node server.mjs",
+    "frequency": "node batch/frequency-job.mjs",
+    "test": "node tests/core.test.mjs && node tests/frequency.test.mjs",
+    "migrate:emotions": "node batch/migrate-emotions.mjs"
+  }
+}

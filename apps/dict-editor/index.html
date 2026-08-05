@@ -1,0 +1,541 @@
+<!doctype html>
+<html lang="zh-Hant">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta
+      name="description"
+      content="LingXi 本機詞典與訓練資料維護工具，檔案只在瀏覽器中處理。"
+    />
+    <title>LingXi Lexicon Studio</title>
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <a class="skip-link" href="#main-content">跳到主要內容</a>
+
+    <header class="app-header">
+      <div class="brand" aria-label="LingXi Lexicon Studio">
+        <span class="brand__mark" aria-hidden="true">靈</span>
+        <span>
+          <strong>LingXi</strong>
+          <small>Lexicon Studio</small>
+        </span>
+      </div>
+
+      <nav class="mode-switch" aria-label="工作模式">
+        <button class="mode-switch__button is-active" type="button" data-mode="dictionary">
+          詞典編輯
+        </button>
+        <button class="mode-switch__button" type="button" data-mode="training">
+          訓練資料
+        </button>
+        <button class="mode-switch__button" type="button" data-mode="custom">
+          自訂辭典
+        </button>
+        <button class="mode-switch__button" type="button" data-mode="affect">
+          情感標註
+        </button>
+      </nav>
+
+      <div class="file-state" id="file-state" aria-live="polite">
+        <span class="file-state__dot"></span>
+        <span class="file-state__copy">
+          <strong id="file-name">尚未開啟檔案</strong>
+          <small id="file-meta">所有資料只在本機處理</small>
+        </span>
+      </div>
+
+      <div class="header-actions">
+        <button class="button button--quiet" id="open-file-button" type="button">
+          <svg aria-hidden="true" viewBox="0 0 24 24">
+            <path d="M3.5 7.5h6l2-2h9v13h-17z" />
+            <path d="M3.5 9.5h17" />
+          </svg>
+          <span>開啟詞典</span>
+        </button>
+        <button class="button button--primary" id="save-file-button" type="button" disabled>
+          <svg aria-hidden="true" viewBox="0 0 24 24">
+            <path d="M5 4.5h12.5l2 2V20H5z" />
+            <path d="M8 4.5v6h8v-6M8 20v-6h8v6" />
+          </svg>
+          <span>儲存變更</span>
+        </button>
+      </div>
+    </header>
+
+    <main id="main-content" class="main-stage">
+      <div class="alert" id="app-alert" role="alert" hidden>
+        <div>
+          <strong id="alert-title">無法完成操作</strong>
+          <p id="alert-message"></p>
+        </div>
+        <button class="icon-button" id="dismiss-alert" type="button" aria-label="關閉錯誤訊息">
+          <svg aria-hidden="true" viewBox="0 0 24 24">
+            <path d="m7 7 10 10M17 7 7 17" />
+          </svg>
+        </button>
+      </div>
+
+      <section class="workspace is-active" id="dictionary-workspace" aria-labelledby="dictionary-title">
+        <h1 class="visually-hidden" id="dictionary-title">詞典編輯器</h1>
+
+        <div class="empty-state" id="dictionary-empty">
+          <div class="empty-state__glyph" aria-hidden="true">
+            <span>詞</span>
+            <span>性</span>
+            <span>頻</span>
+          </div>
+          <p class="eyebrow">LINGXI DICTIONARY</p>
+          <h2>打開詞典，直接開始校訂</h2>
+          <p>
+            支援舊版 LingXi 的 JSON object 格式。大型詞典會分頁顯示，編輯過程不會上傳任何資料。
+          </p>
+          <div class="empty-state__actions">
+            <button class="button button--primary" type="button" data-action="open-dictionary">
+              開啟 Dict.json
+            </button>
+            <button class="button button--quiet" id="load-dictionary-demo" type="button">
+              載入示範詞典
+            </button>
+          </div>
+          <small>支援 <code>["tag", frequency, "entity", "emotion"]</code> 相容格式；詞頻唯讀</small>
+        </div>
+
+        <div class="editor-shell" id="dictionary-editor" hidden>
+          <div class="tool-strip">
+            <label class="search-field" for="dictionary-query">
+              <svg aria-hidden="true" viewBox="0 0 24 24">
+                <circle cx="10.5" cy="10.5" r="6.5" />
+                <path d="m15.5 15.5 5 5" />
+              </svg>
+              <span class="visually-hidden">搜尋詞語</span>
+              <input
+                id="dictionary-query"
+                type="search"
+                autocomplete="off"
+                placeholder="搜尋詞語，按 / 快速聚焦"
+              />
+              <kbd>/</kbd>
+            </label>
+
+            <div class="tool-strip__actions">
+              <button class="button button--quiet" id="toggle-filter-button" type="button" aria-expanded="false">
+                <svg aria-hidden="true" viewBox="0 0 24 24">
+                  <path d="M4 6h16M7 12h10M10 18h4" />
+                </svg>
+                篩選
+                <span class="badge" id="filter-count" hidden>0</span>
+              </button>
+              <button class="button button--quiet" id="preview-emotion-migration" type="button">
+                預覽情感遷移
+              </button>
+              <button class="button button--quiet" id="open-replace-button" type="button">
+                <svg aria-hidden="true" viewBox="0 0 24 24">
+                  <path d="M4 8h12M13 5l3 3-3 3M20 16H8M11 13l-3 3 3 3" />
+                </svg>
+                批次代換
+              </button>
+              <button class="button button--dark" id="add-entry-button" type="button">
+                <svg aria-hidden="true" viewBox="0 0 24 24">
+                  <path d="M12 5v14M5 12h14" />
+                </svg>
+                新增詞條
+              </button>
+            </div>
+          </div>
+
+          <div class="filter-panel" id="dictionary-filters" hidden>
+            <label class="field">
+              <span>詞性</span>
+              <select id="filter-tag">
+                <option value="">全部詞性</option>
+              </select>
+            </label>
+            <label class="field">
+              <span>實體標註</span>
+              <select id="filter-entity">
+                <option value="">全部實體</option>
+              </select>
+            </label>
+            <label class="field">
+              <span>情感標註</span>
+              <select id="filter-emotion">
+                <option value="">全部情感</option>
+              </select>
+            </label>
+            <label class="field field--number">
+              <span>最低頻率</span>
+              <input id="filter-min-frequency" type="number" min="0" inputmode="numeric" placeholder="0" />
+            </label>
+            <label class="field field--number">
+              <span>最高頻率</span>
+              <input id="filter-max-frequency" type="number" min="0" inputmode="numeric" placeholder="不限" />
+            </label>
+            <button class="button button--text" id="clear-filter-button" type="button">清除全部</button>
+          </div>
+
+          <div class="table-region" aria-busy="false">
+            <div class="table-scroll">
+              <table class="data-table">
+                <caption class="visually-hidden">詞典詞條</caption>
+                <thead>
+                  <tr>
+                    <th class="cell-check">
+                      <input id="select-page-checkbox" type="checkbox" aria-label="選取目前頁面全部詞條" />
+                    </th>
+                    <th>
+                      <button class="sort-button" type="button" data-sort="word">
+                        詞語 <span aria-hidden="true">↕</span>
+                      </button>
+                    </th>
+                    <th>
+                      <button class="sort-button" type="button" data-sort="tag">
+                        詞性 <span aria-hidden="true">↕</span>
+                      </button>
+                    </th>
+                    <th class="column-entity">實體標註</th>
+                    <th class="column-emotion">情感標註</th>
+                    <th>
+                      <button class="sort-button" type="button" data-sort="frequency">
+                        詞頻（系統） <span aria-hidden="true">↕</span>
+                      </button>
+                    </th>
+                    <th class="cell-actions"><span class="visually-hidden">操作</span></th>
+                  </tr>
+                </thead>
+                <tbody id="dictionary-table-body"></tbody>
+              </table>
+            </div>
+
+            <div class="table-empty" id="table-empty" hidden>
+              <strong>找不到符合條件的詞條</strong>
+              <p>調整搜尋文字或清除欄位篩選後再試一次。</p>
+              <button class="button button--quiet" type="button" data-action="clear-filters">清除篩選</button>
+            </div>
+          </div>
+
+          <footer class="table-footer">
+            <p id="dictionary-result-summary">0 筆詞條</p>
+            <div class="page-size">
+              <label for="page-size-select">每頁</label>
+              <select id="page-size-select">
+                <option value="25">25</option>
+                <option value="50" selected>50</option>
+                <option value="100">100</option>
+              </select>
+              <span>筆</span>
+            </div>
+            <nav class="pagination" aria-label="詞典分頁">
+              <button class="icon-button" id="first-page-button" type="button" aria-label="第一頁">«</button>
+              <button class="icon-button" id="previous-page-button" type="button" aria-label="上一頁">‹</button>
+              <span id="page-indicator">第 1 / 1 頁</span>
+              <button class="icon-button" id="next-page-button" type="button" aria-label="下一頁">›</button>
+              <button class="icon-button" id="last-page-button" type="button" aria-label="最後一頁">»</button>
+            </nav>
+          </footer>
+        </div>
+      </section>
+
+      <section class="workspace" id="custom-workspace" aria-labelledby="custom-title" hidden>
+        <h1 class="visually-hidden" id="custom-title">多領域自訂辭典</h1>
+        <div class="empty-state" id="custom-empty">
+          <div class="empty-state__glyph" aria-hidden="true"><span>域</span><span>詞</span></div>
+          <p class="eyebrow">DOMAIN LEXICON</p>
+          <h2>維護不含詞頻的領域辭典</h2>
+          <p>每份檔案保存領域、優先序與詞條；frequency 欄位會被拒絕。</p>
+          <div class="empty-state__actions">
+            <button class="button button--primary" type="button" data-action="open-custom">開啟自訂辭典</button>
+            <button class="button button--quiet" type="button" data-action="new-custom">建立新辭典</button>
+          </div>
+        </div>
+        <div class="editor-shell" id="custom-editor" hidden>
+          <div class="filter-panel structured-form">
+            <label class="field"><span>辭典 ID</span><input id="custom-id" required /></label>
+            <label class="field"><span>領域</span><input id="custom-domain" required /></label>
+            <label class="field field--number"><span>優先序（-10..10）</span><input id="custom-priority" type="number" min="-10" max="10" /></label>
+            <label class="field"><span>啟用</span><input id="custom-enabled" type="checkbox" /></label>
+          </div>
+          <label class="field field--wide">
+            <span>詞條（每行：詞語 + Tab + 詞性；不填詞性預設 Na）</span>
+            <textarea id="custom-entries" rows="18" spellcheck="false"></textarea>
+          </label>
+          <p id="custom-summary">0 筆詞條</p>
+        </div>
+      </section>
+
+      <section class="workspace" id="affect-workspace" aria-labelledby="affect-title" hidden>
+        <h1 class="visually-hidden" id="affect-title">細顆粒度情感標註</h1>
+        <div class="empty-state" id="affect-empty">
+          <div class="empty-state__glyph" aria-hidden="true"><span>情</span><span>感</span></div>
+          <p class="eyebrow">AFFECT LEXICON</p>
+          <h2>以階層多標籤維護情感詞</h2>
+          <p>詞頻與情感分開儲存；同一詞可選擇多個細顆粒度標籤。</p>
+          <div class="empty-state__actions">
+            <button class="button button--primary" type="button" data-action="open-affect">開啟情感詞典</button>
+            <button class="button button--quiet" type="button" data-action="new-affect">建立新詞典</button>
+          </div>
+        </div>
+        <div class="editor-shell" id="affect-editor" hidden>
+          <div class="tool-strip">
+            <label class="field"><span>選擇詞條</span><select id="affect-entry-select"></select></label>
+            <div class="tool-strip__actions">
+              <button class="button button--quiet" id="affect-new" type="button">新增詞條</button>
+              <button class="button button--danger-quiet" id="affect-delete" type="button">刪除詞條</button>
+            </div>
+          </div>
+          <div class="filter-panel structured-form affect-filters">
+            <label class="field"><span>搜尋</span><input id="affect-filter-query" type="search" /></label>
+            <label class="field"><span>家族</span><select id="affect-filter-family"><option value="">全部家族</option></select></label>
+            <label class="field"><span>細標籤</span><select id="affect-filter-emotion"><option value="">全部標籤</option></select></label>
+            <label class="field"><span>極性</span><select id="affect-filter-polarity">
+              <option value="">全部極性</option><option value="positive">positive</option>
+              <option value="negative">negative</option><option value="neutral">neutral</option>
+              <option value="contextual">contextual</option><option value="mixed">mixed</option>
+            </select></label>
+            <label class="field"><span>狀態</span><select id="affect-filter-status">
+              <option value="">全部</option><option value="unannotated">未標註</option>
+              <option value="pending">遷移待確認</option>
+            </select></label>
+          </div>
+          <div class="filter-panel structured-form">
+            <label class="field"><span>詞語</span><input id="affect-word" /></label>
+            <label class="field"><span>來源</span><input id="affect-source" placeholder="manual" /></label>
+            <label class="field"><span>需視上下文</span><input id="affect-context" type="checkbox" /></label>
+            <label class="field"><span>極性覆寫</span><select id="affect-polarity">
+              <option value="">自動推導</option><option value="mixed">mixed</option>
+              <option value="contextual">contextual</option>
+            </select></label>
+            <div class="field"><span>目前極性</span><output id="affect-polarity-result">neutral</output></div>
+          </div>
+          <fieldset class="taxonomy-tree">
+            <legend>階層多標籤</legend>
+            <div id="affect-emotion-tree"></div>
+          </fieldset>
+          <label class="field field--wide"><span>人工備註</span><textarea id="affect-notes" rows="3"></textarea></label>
+          <button class="button button--primary" id="affect-apply" type="button">套用詞條標註</button>
+          <p id="affect-summary">0 筆情感詞</p>
+        </div>
+      </section>
+
+      <section class="workspace" id="training-workspace" aria-labelledby="training-title" hidden>
+        <h1 class="visually-hidden" id="training-title">訓練資料維護</h1>
+
+        <div class="empty-state" id="training-empty">
+          <div class="empty-state__glyph empty-state__glyph--lines" aria-hidden="true">
+            <span></span><span></span><span></span>
+          </div>
+          <p class="eyebrow">SEGMENTATION CORPUS</p>
+          <h2>抽查並修正分詞資料</h2>
+          <p>載入 UTF-8 TXT 後，可隨機瀏覽、查詢、代換或刪除資料列，並同步收集潛在新詞。</p>
+          <div class="empty-state__actions">
+            <button class="button button--primary" type="button" data-action="open-training">
+              開啟訓練資料
+            </button>
+            <button class="button button--quiet" id="load-training-demo" type="button">
+              載入示範資料
+            </button>
+          </div>
+        </div>
+
+        <div class="training-shell" id="training-editor" hidden>
+          <div class="tool-strip">
+            <label class="search-field" for="training-query">
+              <svg aria-hidden="true" viewBox="0 0 24 24">
+                <circle cx="10.5" cy="10.5" r="6.5" />
+                <path d="m15.5 15.5 5 5" />
+              </svg>
+              <span class="visually-hidden">查詢訓練資料</span>
+              <input id="training-query" type="search" autocomplete="off" placeholder="查詢分詞片段" />
+            </label>
+            <div class="tool-strip__actions">
+              <button class="button button--quiet" id="random-training-button" type="button">
+                <svg aria-hidden="true" viewBox="0 0 24 24">
+                  <path d="M4 7h3c5 0 5 10 10 10h3M17 14l3 3-3 3M4 17h3c2 0 3.2-1.7 4.4-3.6M17 4l3 3-3 3" />
+                </svg>
+                隨機 100 筆
+              </button>
+              <button class="button button--quiet" id="training-replace-button" type="button">
+                <svg aria-hidden="true" viewBox="0 0 24 24">
+                  <path d="M4 8h12M13 5l3 3-3 3M20 16H8M11 13l-3 3 3 3" />
+                </svg>
+                批次代換
+              </button>
+              <button class="button button--quiet" id="open-new-words-button" type="button" disabled>
+                潛在新詞
+                <span class="badge" id="new-word-count">0</span>
+              </button>
+            </div>
+          </div>
+
+          <div class="training-status">
+            <div>
+              <span>目前檢視</span>
+              <strong id="training-view-label">前 100 筆</strong>
+            </div>
+            <label class="index-jump" for="training-start-index">
+              從第
+              <input id="training-start-index" type="number" min="1" value="1" inputmode="numeric" />
+              筆開始
+            </label>
+            <button class="button button--text" id="jump-training-button" type="button">跳至位置</button>
+          </div>
+
+          <div class="corpus-viewer" id="corpus-viewer" role="list" aria-label="訓練資料內容"></div>
+
+          <footer class="table-footer">
+            <p id="training-result-summary">0 筆資料</p>
+            <button class="button button--danger-quiet" id="delete-training-line-button" type="button" disabled>
+              刪除選取資料
+            </button>
+          </footer>
+        </div>
+      </section>
+    </main>
+
+    <div class="selection-bar" id="selection-bar" hidden>
+      <div>
+        <span class="selection-bar__count" id="selection-count">0</span>
+        <span>筆已選取</span>
+      </div>
+      <div class="selection-bar__actions">
+        <button class="button button--quiet-on-dark" id="clear-selection-button" type="button">取消選取</button>
+        <button class="button button--quiet-on-dark" id="mark-unknown-button" type="button">
+          標記為 unknown
+        </button>
+        <button class="button button--danger" id="delete-selected-button" type="button">刪除選取</button>
+      </div>
+    </div>
+
+    <dialog class="modal" id="entry-dialog" aria-labelledby="entry-dialog-title">
+      <form method="dialog" id="entry-form">
+        <header class="modal__header">
+          <div>
+            <p class="eyebrow">LEXICON ENTRY</p>
+            <h2 id="entry-dialog-title">新增詞條</h2>
+          </div>
+          <button class="icon-button" value="cancel" formnovalidate aria-label="關閉詞條編輯視窗">×</button>
+        </header>
+        <div class="modal__body form-grid">
+          <label class="field field--wide">
+            <span>詞語</span>
+            <input id="entry-word" name="word" required autocomplete="off" />
+            <small>詞語不可空白，且不得與既有詞條重複。</small>
+          </label>
+          <label class="field">
+            <span>詞性</span>
+            <select id="entry-tag" name="tag"></select>
+          </label>
+          <p class="frequency-notice field--wide">
+            <strong>詞頻由系統維護</strong>
+            新增詞條先使用預設值 1；待累積達批次門檻後，系統會以同詞性中位數重新分詞候選句，確認完整成詞後計算一次並鎖定。
+          </p>
+          <label class="field">
+            <span>實體標註</span>
+            <select id="entry-entity" name="entity"></select>
+          </label>
+          <label class="field">
+            <span>舊情感代碼（唯讀，請使用情感標註模式維護）</span>
+            <select id="entry-emotion" name="emotion" disabled></select>
+          </label>
+          <p class="form-error field--wide" id="entry-form-error" role="alert" hidden></p>
+        </div>
+        <footer class="modal__footer">
+          <button class="button button--quiet" value="cancel" formnovalidate>取消</button>
+          <button class="button button--primary" id="entry-submit-button" value="default">
+            新增詞條
+          </button>
+        </footer>
+      </form>
+    </dialog>
+
+    <dialog class="modal" id="replace-dialog" aria-labelledby="replace-dialog-title">
+      <form method="dialog" id="replace-form">
+        <header class="modal__header">
+          <div>
+            <p class="eyebrow">BATCH REPLACE</p>
+            <h2 id="replace-dialog-title">批次代換詞語</h2>
+          </div>
+          <button class="icon-button" value="cancel" formnovalidate aria-label="關閉代換視窗">×</button>
+        </header>
+        <div class="modal__body">
+          <div class="replace-fields">
+            <label class="field">
+              <span>尋找內容</span>
+              <input id="replace-before" required autocomplete="off" />
+            </label>
+            <span class="replace-arrow" aria-hidden="true">→</span>
+            <label class="field">
+              <span>代換為</span>
+              <input id="replace-after" autocomplete="off" />
+            </label>
+          </div>
+          <label class="check-field" id="collect-new-word-field" hidden>
+            <input id="collect-new-word-checkbox" type="checkbox" checked />
+            <span>將代換結果中的最長片段加入潛在新詞</span>
+          </label>
+          <div class="replace-preview" id="replace-preview">
+            <span>輸入尋找內容後，這裡會顯示影響範圍。</span>
+          </div>
+        </div>
+        <footer class="modal__footer">
+          <button class="button button--quiet" value="cancel" formnovalidate>取消</button>
+          <button class="button button--primary" id="replace-submit-button" value="default" disabled>
+            執行代換
+          </button>
+        </footer>
+      </form>
+    </dialog>
+
+    <dialog class="modal modal--compact" id="confirm-dialog" aria-labelledby="confirm-title">
+      <form method="dialog">
+        <header class="modal__header">
+          <div>
+            <p class="eyebrow">CONFIRM ACTION</p>
+            <h2 id="confirm-title">確認操作</h2>
+          </div>
+        </header>
+        <div class="modal__body">
+          <p id="confirm-message"></p>
+        </div>
+        <footer class="modal__footer">
+          <button class="button button--quiet" value="cancel">取消</button>
+          <button class="button button--danger" id="confirm-submit-button" value="confirm">確認</button>
+        </footer>
+      </form>
+    </dialog>
+
+    <aside class="drawer" id="new-word-drawer" aria-labelledby="new-word-drawer-title" hidden>
+      <header class="drawer__header">
+        <div>
+          <p class="eyebrow">NEW WORD CANDIDATES</p>
+          <h2 id="new-word-drawer-title">潛在新詞</h2>
+        </div>
+        <button class="icon-button" id="close-new-word-drawer" type="button" aria-label="關閉潛在新詞面板">×</button>
+      </header>
+      <div class="drawer__body">
+        <p>來自訓練資料批次代換，可下載後再進行人工審核。</p>
+        <ol class="new-word-list" id="new-word-list"></ol>
+      </div>
+      <footer class="drawer__footer">
+        <button class="button button--quiet" id="clear-new-words-button" type="button">清空清單</button>
+        <button class="button button--primary" id="download-new-words-button" type="button">下載 TXT</button>
+      </footer>
+    </aside>
+    <button class="drawer-backdrop" id="drawer-backdrop" type="button" aria-label="關閉側邊面板" hidden></button>
+
+    <div class="loading-layer" id="loading-layer" aria-live="polite" hidden>
+      <div class="loading-layer__panel">
+        <span class="spinner" aria-hidden="true"></span>
+        <strong id="loading-title">正在處理檔案</strong>
+        <p id="loading-message">大型詞典可能需要幾秒鐘。</p>
+      </div>
+    </div>
+
+    <div class="toast-region" id="toast-region" aria-live="polite" aria-atomic="true"></div>
+
+    <input id="dictionary-file-input" type="file" accept=".json,application/json" hidden />
+    <input id="training-file-input" type="file" accept=".txt,text/plain" hidden />
+
+    <script type="module" src="./app.js"></script>
+  </body>
+</html>
