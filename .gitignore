@@ -10,6 +10,7 @@
 # Generated packages and internal delivery bundles
 /dist/
 /crates/*.zip
+/apps/dict-editor.zip
 *.whl
 
 # Python
@@ -32,3 +33,8 @@ Thumbs.db
 
 # Downloaded corpora, CKIP models, and generated training artifacts
 /.corpus-work/
+/corpus/data/embedding_character/
+/corpus/data/embedding_word/
+/corpus/data/model_ner/
+/corpus/data/model_pos/
+/corpus/data/model_ws/
