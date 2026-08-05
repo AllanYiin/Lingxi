@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import random
 from collections.abc import Mapping
+from functools import lru_cache
 
 from .labels import (
     AMBIGUOUS_QUOTES,
@@ -47,14 +48,18 @@ class TridentTextNoiseMixer:
 
         self.names = tuple(sorted(supported))
         self.weights = tuple(float(weights.get(name, 0.0)) / total for name in self.names)
+        homomorphic = RandomHomomorphicTypo(
+            convert_ratio=homomorphic_convert_ratio
+        )
+        homomorphic.get_similar = lru_cache(maxsize=8192)(  # type: ignore[method-assign]
+            homomorphic.get_similar
+        )
         self.transforms = {
             "bopomofo": BopomofoConvert(convert_ratio=bopomofo_convert_ratio),
             "homophonic": RandomHomophonicTypo(
                 convert_ratio=homophonic_convert_ratio
             ),
-            "homomorphic": RandomHomomorphicTypo(
-                convert_ratio=homomorphic_convert_ratio
-            ),
+            "homomorphic": homomorphic,
         }
         self.chinese_transforms = (
             ChineseConvert(convert_to="simplified", convert_ratio=1.0),

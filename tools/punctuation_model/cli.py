@@ -11,6 +11,7 @@ from typing import Any, Mapping, Sequence, TextIO
 import torch
 from torch.nn.utils import clip_grad_norm_
 from torch.utils.data import DataLoader
+from tqdm.auto import tqdm
 
 from .data import (
     CharVocabulary,
@@ -403,7 +404,21 @@ def _train(args: argparse.Namespace) -> int:
         model.train()
         totals = Counter()
         steps = 0
-        for step, cpu_batch in enumerate(train_loader, 1):
+        estimated_batches = args.steps_per_epoch or math.ceil(
+            weight_report["accepted_records"]
+            * (1.0 + args.transcript_augment_probability)
+            / args.batch_size
+        )
+        progress = tqdm(
+            train_loader,
+            total=estimated_batches,
+            desc=f"Epoch {epoch}",
+            unit="batch",
+            dynamic_ncols=True,
+            mininterval=1.0,
+            disable=args.disable_tqdm,
+        )
+        for step, cpu_batch in enumerate(progress, 1):
             if args.steps_per_epoch is not None and step > args.steps_per_epoch:
                 break
             batch = _move_batch(cpu_batch, device)
@@ -427,6 +442,14 @@ def _train(args: argparse.Namespace) -> int:
             for key, value in losses.items():
                 totals[key] += float(value.item())
             steps += 1
+            if step == 1 or step % 10 == 0:
+                progress.set_postfix(
+                    loss="{:.4f}".format(totals["loss"] / steps),
+                    event="{:.4f}".format(totals["event_loss"] / steps),
+                    positive="{:.4f}".format(
+                        totals["positive_pair_loss"] / steps
+                    ),
+                )
         if not steps:
             raise ValueError("training dataset produced no valid examples")
 
@@ -669,6 +692,7 @@ def build_parser() -> argparse.ArgumentParser:
     train.add_argument("--homophonic-convert-ratio", type=float, default=0.10)
     train.add_argument("--homomorphic-convert-ratio", type=float, default=0.04)
     train.add_argument("--workers", type=int, default=0)
+    train.add_argument("--disable-tqdm", action="store_true")
     train.add_argument("--device", default="auto")
     train.add_argument("--style", choices=("zh-tw", "english"), default="zh-tw")
     train.add_argument("--seed", type=int, default=13)
