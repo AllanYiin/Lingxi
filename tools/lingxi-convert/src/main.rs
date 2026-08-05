@@ -14,7 +14,9 @@ use anyhow::{bail, Context, Result};
 use daachorse::CharwiseDoubleArrayAhoCorasick;
 use serde_json::Value;
 
-use lingxi_core::model::{encode_asset, BmesModel, CharTable, DictModel, PosModel, MIN_LOG};
+use lingxi_core::model::{
+    encode_asset, BmesModel, BmesReverseModel, CharTable, DictModel, PosModel, MIN_LOG,
+};
 use lingxi_core::{build_affect_model, parse_affect_lexicon, parse_taxonomy};
 
 /// BMES 狀態固定順序，與 lingxi_core::model 的 STATE_* 對齊。
@@ -29,6 +31,7 @@ const MODEL_FINGERPRINT_FILES: &[&str] = &[
     "transProbs2.json",
     "emmitProbs.json",
     "emmitProbs2.json",
+    "bmesStateStats.json",
     "tagStartProbs.json",
     "tagTransProbs.json",
     "tagTransProbs2.json",
@@ -88,6 +91,8 @@ fn main() -> Result<()> {
     fs::write(out_dir.join("dict.bin"), encode_asset(&dict))?;
     let bmes = convert_bmes(&model_dir)?;
     fs::write(out_dir.join("hmm_bmes.bin"), encode_asset(&bmes))?;
+    let reverse = convert_bmes_reverse(&model_dir, &bmes)?;
+    fs::write(out_dir.join("hmm_bmes_reverse.bin"), encode_asset(&reverse))?;
     let pos = convert_pos(&model_dir)?;
     fs::write(out_dir.join("hmm_pos.bin"), encode_asset(&pos))?;
     let taxonomy_text = fs::read_to_string(affect_dir.join("emotion-taxonomy.json"))
@@ -518,6 +523,96 @@ fn convert_bmes(resources: &Path) -> Result<BmesModel> {
 // POS HMM 轉換
 // ---------------------------------------------------------------------------
 
+fn convert_bmes_reverse(resources: &Path, bmes: &BmesModel) -> Result<BmesReverseModel> {
+    const PRIOR_STRENGTH: f64 = 1.0;
+
+    let stats = read_json(&resources.join("bmesStateStats.json"))?;
+    let object = stats.as_object().context("bmesStateStats 非物件")?;
+    if object.get("schema_version").and_then(Value::as_u64) != Some(1) {
+        bail!("bmesStateStats schema_version 必須為 1");
+    }
+    let states = object
+        .get("states")
+        .and_then(Value::as_array)
+        .context("bmesStateStats.states 非陣列")?;
+    let observed_states: Vec<_> = states.iter().filter_map(Value::as_str).collect();
+    if observed_states != STATES {
+        bail!("bmesStateStats.states 必須依序為 B/M/E/S");
+    }
+    let marginal_object = object
+        .get("state_marginals")
+        .and_then(Value::as_object)
+        .context("bmesStateStats.state_marginals 非物件")?;
+    let mut state_marginals = [0.0f32; 4];
+    for (index, state) in STATES.iter().enumerate() {
+        state_marginals[index] = marginal_object
+            .get(*state)
+            .and_then(Value::as_f64)
+            .with_context(|| format!("缺少 state marginal {state}"))?
+            as f32;
+    }
+    let marginal_sum: f64 = state_marginals.iter().map(|&value| value as f64).sum();
+    if state_marginals
+        .iter()
+        .any(|&value| value <= 0.0 || !value.is_finite())
+        || (marginal_sum - 1.0).abs() > 1.0e-5
+    {
+        bail!("BMES state marginal 無效或未正規化");
+    }
+
+    let characters = object
+        .get("characters")
+        .and_then(Value::as_object)
+        .context("bmesStateStats.characters 非物件")?;
+    let mut char_support = Vec::with_capacity(bmes.chars.chars.len());
+    let mut log_probs = Vec::with_capacity(bmes.chars.chars.len());
+    for &character in &bmes.chars.chars {
+        let key = character.to_string();
+        let row = characters
+            .get(&key)
+            .and_then(Value::as_object)
+            .with_context(|| format!("bmesStateStats 缺少字元 {character:?}"))?;
+        let support = row
+            .get("support")
+            .and_then(Value::as_u64)
+            .with_context(|| format!("{character:?} support 非整數"))?;
+        let support = u32::try_from(support).context("字元 support 超過 u32")?;
+        let counts = row
+            .get("state_counts")
+            .and_then(Value::as_array)
+            .with_context(|| format!("{character:?} state_counts 非陣列"))?;
+        if counts.len() != 4 {
+            bail!("{character:?} state_counts 長度不是 4");
+        }
+        let mut observed_sum = 0u64;
+        let mut log_row = [0.0f32; 4];
+        for state in 0..4 {
+            let count = counts[state]
+                .as_u64()
+                .with_context(|| format!("{character:?} state count 非整數"))?;
+            observed_sum += count;
+            let probability = (count as f64 + PRIOR_STRENGTH * state_marginals[state] as f64)
+                / (support as f64 + PRIOR_STRENGTH);
+            log_row[state] = probability.ln() as f32;
+        }
+        if observed_sum != support as u64 {
+            bail!("{character:?} support 與 state_counts 總和不符");
+        }
+        char_support.push(support);
+        log_probs.push(log_row);
+    }
+    let log_unknown = state_marginals.map(f32::ln);
+    Ok(BmesReverseModel {
+        chars: CharTable {
+            chars: bmes.chars.chars.clone(),
+        },
+        state_marginals,
+        char_support,
+        log_probs,
+        log_unknown,
+        prior_strength: PRIOR_STRENGTH as f32,
+    })
+}
 fn convert_pos(resources: &Path) -> Result<PosModel> {
     let start_json = read_json(&resources.join("tagStartProbs.json"))?;
     let trans1_json = read_json(&resources.join("tagTransProbs.json"))?;

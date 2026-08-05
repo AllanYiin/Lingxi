@@ -201,6 +201,7 @@ def lingxi_once(
     assets: Path,
     sentences: Sequence[str],
     mode: str,
+    extra_args: Sequence[str] = (),
 ) -> tuple[Any, dict[str, float]]:
     payload = "\n".join(sentences) + "\n"
     command = [
@@ -213,6 +214,7 @@ def lingxi_once(
     ]
     if mode == "segmentation":
         command.extend(["--sep", SEPARATOR])
+    command.extend(extra_args)
     started = time.perf_counter()
     process = subprocess.run(
         command,
@@ -259,12 +261,19 @@ def run_lingxi(
     sentences: Sequence[str],
     mode: str,
     repeats: int,
+    extra_args: Sequence[str] = (),
 ) -> tuple[Any, dict[str, Any]]:
-    lingxi_once(cli, assets, sentences[: min(10, len(sentences))], mode)
+    lingxi_once(
+        cli,
+        assets,
+        sentences[: min(10, len(sentences))],
+        mode,
+        extra_args,
+    )
     predictions = None
     timings: list[dict[str, float]] = []
     for _ in range(repeats):
-        current, timing = lingxi_once(cli, assets, sentences, mode)
+        current, timing = lingxi_once(cli, assets, sentences, mode, extra_args)
         if predictions is None:
             predictions = current
         elif predictions != current:

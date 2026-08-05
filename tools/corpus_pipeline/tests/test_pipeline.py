@@ -206,6 +206,7 @@ class CorpusPipelineTests(unittest.TestCase):
                 "emmitProbs.json",
                 "emmitProbs2.json",
                 "r_emmitProbs.json",
+                "bmesStateStats.json",
                 "tagStartProbs.json",
                 "tagTransProbs.json",
                 "tagEmitProbs.json",
@@ -216,6 +217,15 @@ class CorpusPipelineTests(unittest.TestCase):
             dictionary = json.loads((output / "Dict.json").read_text(encoding="utf-8"))
             self.assertEqual(dictionary["臺灣"], ["ns", 2])
             self.assertEqual(report["accepted_sequences"], 2)
+            state_stats = json.loads(
+                (output / "bmesStateStats.json").read_text(encoding="utf-8")
+            )
+            self.assertEqual(state_stats["states"], ["B", "M", "E", "S"])
+            self.assertAlmostEqual(sum(state_stats["state_marginals"].values()), 1.0)
+            for entry in state_stats["characters"].values():
+                self.assertEqual(
+                    entry["support"], sum(entry["state_counts"])
+                )
             start = json.loads((output / "startProbs.json").read_text(encoding="utf-8"))
             self.assertLess(start["M"], -1e29)
 

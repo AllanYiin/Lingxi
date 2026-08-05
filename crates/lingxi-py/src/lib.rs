@@ -83,7 +83,10 @@ impl Segmenter {
         lingxi_core::Segmenter::from_asset_dir_with_user_dict_and_options(
             asset_dir,
             &entries,
-            lingxi_core::SegmenterOptions { custom_lexicons },
+            lingxi_core::SegmenterOptions {
+                custom_lexicons,
+                ..Default::default()
+            },
         )
         .map(|inner| Segmenter { inner })
         .map_err(|error| PyValueError::new_err(error.to_string()))

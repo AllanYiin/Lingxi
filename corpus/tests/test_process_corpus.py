@@ -131,6 +131,7 @@ class ProcessCorpusTests(unittest.TestCase):
                 "transProbs2.json",
                 "emmitProbs.json",
                 "emmitProbs2.json",
+                "bmesStateStats.json",
                 "tagStartProbs.json",
                 "tagTransProbs.json",
                 "tagTransProbs2.json",
@@ -150,6 +151,15 @@ class ProcessCorpusTests(unittest.TestCase):
                 unknown = row["<UNK>"]
                 total = sum(math.exp(row.get(char, unknown)) for char in vocabulary) + math.exp(unknown)
                 self.assertAlmostEqual(total, 1.0, places=9, msg=state)
+            state_stats = json.loads(
+                (model / "bmesStateStats.json").read_text(encoding="utf-8")
+            )
+            self.assertEqual(state_stats["states"], ["B", "M", "E", "S"])
+            self.assertAlmostEqual(sum(state_stats["state_marginals"].values()), 1.0)
+            for entry in state_stats["characters"].values():
+                self.assertEqual(
+                    entry["support"], sum(entry["state_counts"])
+                )
             self.assertEqual(report["pos_tagset"], "ckip")
             pos_start = json.loads((model / "tagStartProbs.json").read_text(encoding="utf-8"))
             self.assertIn("S-VC", pos_start)

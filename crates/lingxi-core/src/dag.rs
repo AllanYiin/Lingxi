@@ -8,7 +8,7 @@
 use std::collections::HashMap;
 
 use crate::dict::Dict;
-use crate::model::{BmesModel, STATE_B, STATE_E, STATE_M, STATE_S};
+use crate::model::{BmesModel, BmesReverseModel, STATE_B, STATE_E, STATE_M, STATE_S};
 use crate::segment::{SegKind, Segment};
 
 const MAX_TOKEN_CHARS: usize = u8::MAX as usize;
@@ -75,8 +75,29 @@ fn boundary_score(model: &BmesModel, context: Context, state: usize) -> f64 {
     }
 }
 
+#[inline]
+fn reverse_score(
+    model: Option<&BmesReverseModel>,
+    row: Option<usize>,
+    state: usize,
+    weight: f32,
+) -> f64 {
+    if weight == 0.0 {
+        return 0.0;
+    }
+    let Some(model) = model else {
+        return 0.0;
+    };
+    let log_probability = row
+        .map(|index| model.log_probs[index][state])
+        .unwrap_or(model.log_unknown[state]);
+    weight as f64 * log_probability as f64
+}
+
 fn bmes_token_score(
     model: &BmesModel,
+    reverse: Option<&BmesReverseModel>,
+    reverse_weight: f32,
     rows: &[Option<usize>],
     start: usize,
     len: usize,
@@ -86,13 +107,16 @@ fn bmes_token_score(
     if len == 1 {
         let previous = match context {
             Context::Start => {
-                return model.start[STATE_S] as f64 + emit1(model, rows[start], STATE_S);
+                return model.start[STATE_S] as f64
+                    + emit1(model, rows[start], STATE_S)
+                    + reverse_score(reverse, rows[start], STATE_S, reverse_weight);
             }
             Context::One(previous) => previous as usize,
             Context::Pair(_, previous) => previous as usize,
         };
         return boundary_score(model, context, STATE_S)
-            + emit2(model, rows[start], previous, STATE_S);
+            + emit2(model, rows[start], previous, STATE_S)
+            + reverse_score(reverse, rows[start], STATE_S, reverse_weight);
     }
 
     let previous = match context {
@@ -104,7 +128,8 @@ fn bmes_token_score(
         + previous.map_or_else(
             || emit1(model, rows[start], STATE_B),
             |state| emit2(model, rows[start], state, STATE_B),
-        );
+        )
+        + reverse_score(reverse, rows[start], STATE_B, reverse_weight);
 
     if len == 2 {
         score += match context {
@@ -239,6 +264,8 @@ fn update_route(
 fn cut_viterbi_impl(
     dict: &Dict,
     model: &BmesModel,
+    reverse: Option<&BmesReverseModel>,
+    reverse_weight: f32,
     chunk: &str,
     byte_base: usize,
     out: &mut Vec<Segment>,
@@ -286,6 +313,15 @@ fn cut_viterbi_impl(
             *slot = candidate;
         }
     }
+    let mut dictionary_boundaries = vec![false; n + 1];
+    for (start, edges) in dictionary_edges.iter().enumerate() {
+        if !edges.is_empty() {
+            dictionary_boundaries[start] = true;
+        }
+        for &end in edges.keys() {
+            dictionary_boundaries[end] = true;
+        }
+    }
 
     let mut m_loop_prefix = vec![0.0f64; n + 1];
     for position in 0..n {
@@ -313,6 +349,12 @@ fn cut_viterbi_impl(
         if sources.is_empty() {
             continue;
         }
+        let (start_reverse, start_reverse_weight) = if !dictionary_boundaries[start] {
+            (reverse, reverse_weight)
+        } else {
+            (None, 0.0)
+        };
+
         for end in start + 1..=n.min(start + MAX_TOKEN_CHARS) {
             let len = end - start;
             let dictionary = dictionary_edges[start].get(&end).copied();
@@ -335,7 +377,16 @@ fn cut_viterbi_impl(
                             unreachable!()
                         }
                     } else {
-                        bmes_token_score(model, &rows, start, len, context, &m_loop_prefix)
+                        bmes_token_score(
+                            model,
+                            start_reverse,
+                            start_reverse_weight,
+                            &rows,
+                            start,
+                            len,
+                            context,
+                            &m_loop_prefix,
+                        )
                     }
                 };
                 let (token_score, word_id) = match dictionary {
@@ -394,7 +445,29 @@ pub fn cut_viterbi(
     byte_base: usize,
     out: &mut Vec<Segment>,
 ) {
-    cut_viterbi_impl(dict, model, chunk, byte_base, out, false);
+    cut_viterbi_impl(dict, model, None, 0.0, chunk, byte_base, out, false);
+}
+
+/// Decode with an optional smoothed reverse-emission feature on OOV token initials.
+pub fn cut_viterbi_with_reverse(
+    dict: &Dict,
+    model: &BmesModel,
+    reverse: Option<&BmesReverseModel>,
+    reverse_weight: f32,
+    chunk: &str,
+    byte_base: usize,
+    out: &mut Vec<Segment>,
+) {
+    cut_viterbi_impl(
+        dict,
+        model,
+        reverse,
+        reverse_weight,
+        chunk,
+        byte_base,
+        out,
+        false,
+    );
 }
 
 #[cfg(test)]
@@ -405,7 +478,7 @@ fn cut_viterbi_reference(
     byte_base: usize,
     out: &mut Vec<Segment>,
 ) {
-    cut_viterbi_impl(dict, model, chunk, byte_base, out, true);
+    cut_viterbi_impl(dict, model, None, 0.0, chunk, byte_base, out, true);
 }
 #[cfg(test)]
 mod tests {
@@ -502,7 +575,8 @@ mod tests {
             Context::Pair(STATE_E as u8, STATE_S as u8),
         ] {
             for len in 1..=rows.len() {
-                let optimized = bmes_token_score(&model, &rows, 0, len, context, &prefix);
+                let optimized =
+                    bmes_token_score(&model, None, 0.0, &rows, 0, len, context, &prefix);
                 let reference = bmes_token_score_reference(&model, &rows, 0, len, context);
                 assert_eq!(optimized, reference, "context={context:?}, len={len}");
             }
@@ -537,5 +611,30 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec![3, 6]
         );
+    }
+
+    #[test]
+    fn reverse_emission_can_break_an_oov_boundary_tie() {
+        let (dict, model) = tiny_models(&[("丙丁", 1.0)]);
+        let reverse = BmesReverseModel {
+            chars: CharTable {
+                chars: model.chars.chars.clone(),
+            },
+            state_marginals: [0.25; 4],
+            char_support: vec![10; model.chars.chars.len()],
+            log_probs: vec![[0.0, -10.0, -10.0, -10.0]; model.chars.chars.len()],
+            log_unknown: [-1.3862944; 4],
+            prior_strength: 1.0,
+        };
+        let mut baseline = Vec::new();
+        cut_viterbi(&dict, &model, "甲乙", 0, &mut baseline);
+        assert_eq!(baseline.len(), 2);
+
+        let mut adjusted = Vec::new();
+        cut_viterbi_with_reverse(&dict, &model, Some(&reverse), 1.0, "甲乙", 0, &mut adjusted);
+        assert_eq!(adjusted.len(), 1);
+        assert_eq!(adjusted[0].byte_start, 0);
+        assert_eq!(adjusted[0].byte_end, "甲乙".len());
+        assert_eq!(adjusted[0].kind, SegKind::Oov);
     }
 }

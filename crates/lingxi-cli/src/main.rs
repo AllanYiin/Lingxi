@@ -31,6 +31,7 @@ struct Args {
     assets: String,
     user_dict: Option<String>,
     lexicons: Vec<String>,
+    reverse_emission_weight: f32,
     format: Format,
     sep: String,
     files: Vec<String>,
@@ -44,6 +45,7 @@ fn parse_args() -> Result<Args> {
         assets: std::env::var("LINGXI_ASSETS").unwrap_or_else(|_| "assets".into()),
         user_dict: None,
         lexicons: Vec::new(),
+        reverse_emission_weight: 0.25,
         format: Format::Words,
         sep: "/".into(),
         files: Vec::new(),
@@ -56,6 +58,13 @@ fn parse_args() -> Result<Args> {
             "--assets" => args.assets = it.next().context("--assets 需要參數")?,
             "--user-dict" => args.user_dict = Some(it.next().context("--user-dict 需要參數")?),
             "--lexicon" => args.lexicons.push(it.next().context("--lexicon 需要參數")?),
+            "--reverse-weight" => {
+                args.reverse_emission_weight = it
+                    .next()
+                    .context("--reverse-weight 需要參數")?
+                    .parse()
+                    .context("--reverse-weight 需為 0..=1 浮點數")?;
+            }
             "--sep" => args.sep = it.next().context("--sep 需要參數")?,
             "--format" => {
                 args.format = match it.next().context("--format 需要參數")?.as_str() {
@@ -76,7 +85,7 @@ fn parse_args() -> Result<Args> {
             }
             "--stats" => args.stats = true,
             "--help" | "-h" => {
-                eprintln!("用法: lingxi [--assets DIR] [--user-dict FILE] [--lexicon FILE]... [--format words|tsv|jsonl|annotated-json] [--sep S] [--keywords N] [--stats] [FILE...]");
+                eprintln!("用法: lingxi [--assets DIR] [--user-dict FILE] [--lexicon FILE]... [--reverse-weight 0..1（預設 0.25）] [--format words|tsv|jsonl|annotated-json] [--sep S] [--keywords N] [--stats] [FILE...]");
                 std::process::exit(0);
             }
             _ => args.files.push(a),
@@ -112,6 +121,7 @@ fn main() -> Result<()> {
         &user_entries,
         lingxi_core::SegmenterOptions {
             custom_lexicons: lexicons,
+            reverse_emission_weight: args.reverse_emission_weight,
         },
     )
     .with_context(|| {

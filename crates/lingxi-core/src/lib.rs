@@ -85,6 +85,8 @@ struct PipelineScratch {
 pub struct Segmenter {
     dict: Dict,
     bmes: model::BmesModel,
+    bmes_reverse: Option<model::BmesReverseModel>,
+    reverse_emission_weight: f32,
     pos: pos::PosTagger,
     /// 統一詞性名稱表：合併詞典詞性、POS 模型詞性與內建詞性。
     tags: Vec<String>,
@@ -160,6 +162,7 @@ impl Segmenter {
         Self::from_models_with_all(
             load_asset(&dir.join("dict.bin"))?,
             load_asset(&dir.join("hmm_bmes.bin"))?,
+            load_optional_asset(&dir.join("hmm_bmes_reverse.bin"))?,
             load_asset(&dir.join("hmm_pos.bin"))?,
             load_optional_asset(&dir.join("affect.bin"))?,
             user_entries,
@@ -176,6 +179,7 @@ impl Segmenter {
         Self::from_models_with_all(
             load_asset(&dir.join("dict.bin"))?,
             load_asset(&dir.join("hmm_bmes.bin"))?,
+            load_optional_asset(&dir.join("hmm_bmes_reverse.bin"))?,
             load_asset(&dir.join("hmm_pos.bin"))?,
             load_optional_asset(&dir.join("affect.bin"))?,
             user_entries,
@@ -191,6 +195,7 @@ impl Segmenter {
         Self::from_models_with_all(
             load_asset(&dir.join("dict.bin"))?,
             load_asset(&dir.join("hmm_bmes.bin"))?,
+            load_optional_asset(&dir.join("hmm_bmes_reverse.bin"))?,
             load_asset(&dir.join("hmm_pos.bin"))?,
             load_optional_asset(&dir.join("affect.bin"))?,
             &[],
@@ -206,10 +211,14 @@ impl Segmenter {
         Self::from_models_with_all(
             dict_model,
             bmes,
+            None,
             pos,
             None,
             &[],
-            SegmenterOptions::default(),
+            SegmenterOptions {
+                reverse_emission_weight: 0.0,
+                ..Default::default()
+            },
         )
     }
 
@@ -222,10 +231,14 @@ impl Segmenter {
         Self::from_models_with_all(
             dict_model,
             bmes,
+            None,
             pos,
             None,
             user_entries,
-            SegmenterOptions::default(),
+            SegmenterOptions {
+                reverse_emission_weight: 0.0,
+                ..Default::default()
+            },
         )
     }
 
@@ -236,18 +249,41 @@ impl Segmenter {
         affect_model: Option<AffectModel>,
         options: SegmenterOptions,
     ) -> Result<Self, LoadError> {
-        Self::from_models_with_all(dict_model, bmes, pos, affect_model, &[], options)
+        Self::from_models_with_all(dict_model, bmes, None, pos, affect_model, &[], options)
     }
 
     fn from_models_with_all(
         dict_model: model::DictModel,
         bmes: model::BmesModel,
+        bmes_reverse: Option<model::BmesReverseModel>,
         pos: model::PosModel,
         affect_model: Option<AffectModel>,
         user_entries: &[UserDictEntry],
         options: SegmenterOptions,
     ) -> Result<Self, LoadError> {
         let mut dict = Dict::from_model(dict_model);
+        if !options.reverse_emission_weight.is_finite()
+            || !(0.0..=1.0).contains(&options.reverse_emission_weight)
+        {
+            return Err(LoadError::InvalidOptions(
+                "reverse_emission_weight 必須介於 0 與 1".into(),
+            ));
+        }
+        if options.reverse_emission_weight > 0.0 && bmes_reverse.is_none() {
+            return Err(LoadError::InvalidOptions(
+                "reverse_emission_weight > 0 但缺少 hmm_bmes_reverse.bin".into(),
+            ));
+        }
+        if let Some(reverse) = &bmes_reverse {
+            if reverse.chars.chars != bmes.chars.chars
+                || reverse.log_probs.len() != bmes.chars.chars.len()
+                || reverse.char_support.len() != bmes.chars.chars.len()
+            {
+                return Err(LoadError::InvalidOptions(
+                    "reverse emission 字元表與 BMES 模型不一致".into(),
+                ));
+            }
+        }
         let mut dictionary_entries = parse_user_dict(CURATED_DICTIONARY);
         dictionary_entries.extend_from_slice(user_entries);
         dict.install_user_dict(&dictionary_entries)
@@ -296,6 +332,8 @@ impl Segmenter {
         Ok(Segmenter {
             dict,
             bmes,
+            bmes_reverse,
+            reverse_emission_weight: options.reverse_emission_weight,
             pos,
             tags,
             dict_tag_map,
@@ -557,13 +595,20 @@ impl Segmenter {
         _scratch_segments: &mut Vec<Segment>,
         out: &mut Vec<Segment>,
     ) {
-        dag::cut_viterbi(
-            &self.dict,
-            &self.bmes,
-            &normalized[byte_start..byte_end],
-            byte_start,
-            out,
-        );
+        let text = &normalized[byte_start..byte_end];
+        if self.reverse_emission_weight == 0.0 {
+            dag::cut_viterbi(&self.dict, &self.bmes, text, byte_start, out);
+        } else {
+            dag::cut_viterbi_with_reverse(
+                &self.dict,
+                &self.bmes,
+                self.bmes_reverse.as_ref(),
+                self.reverse_emission_weight,
+                text,
+                byte_start,
+                out,
+            );
+        }
     }
 
     /// 在固定詞界上執行 POS；非 Han 保護區段維持確定性詞性。

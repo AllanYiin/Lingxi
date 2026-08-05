@@ -170,11 +170,20 @@ fn structured_lexicon_is_frequency_free_and_affect_is_multi_label() {
         Some(affect),
         lingxi_core::SegmenterOptions {
             custom_lexicons: vec![custom],
+            reverse_emission_weight: 0.0,
+            ..Default::default()
         },
     )
     .unwrap();
 
-    let baseline = Segmenter::from_asset_dir(ASSET_DIR).unwrap();
+    let baseline = Segmenter::from_asset_dir_with_options(
+        ASSET_DIR,
+        lingxi_core::SegmenterOptions {
+            reverse_emission_weight: 0.0,
+            ..Default::default()
+        },
+    )
+    .unwrap();
     let unrelated = "行政院公布最新經濟成長率";
     assert_eq!(
         seg.cut(unrelated),

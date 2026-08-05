@@ -625,12 +625,37 @@ def write_bmes_model(counts: ModelCounts, output_dir: Path, alpha: float) -> Non
         for previous in BMES
     }
 
+    state_counts = {
+        state: sum(counts.bmes_emit1[state].values()) for state in BMES
+    }
+    total_state_count = sum(state_counts.values())
+    if total_state_count <= 0:
+        raise ValueError("BMES state count 不可為 0")
+    state_marginals = {
+        state: state_counts[state] / total_state_count for state in BMES
+    }
+    character_stats = {}
+    for char, row in sorted(counts.bmes_reverse.items()):
+        state_row = [int(row[state]) for state in BMES]
+        character_stats[char] = {
+            "support": sum(state_row),
+            "state_counts": state_row,
+        }
+    bmes_state_stats = {
+        "schema_version": 1,
+        "states": list(BMES),
+        "state_counts": state_counts,
+        "state_marginals": state_marginals,
+        "characters": character_stats,
+    }
+
 
     dump_json(output_dir / "startProbs.json", start)
     dump_json(output_dir / "transProbs.json", trans1)
     dump_json(output_dir / "transProbs2.json", trans2)
     dump_json(output_dir / "emmitProbs.json", emit1)
     dump_json(output_dir / "emmitProbs2.json", emit2)
+    dump_json(output_dir / "bmesStateStats.json", bmes_state_stats)
 
 def write_pos_model(counts: ModelCounts, output_dir: Path, alpha: float) -> int:
     observed_states = set(counts.pos_start) | set(counts.pos_emit) | set(counts.pos_trans1)
@@ -701,6 +726,7 @@ def write_pos_lexicon(connection: sqlite3.Connection, output_dir: Path) -> int:
 MODEL_FINGERPRINT_FILES = (
     "Dict.json", "VariantWords.json", "startProbs.json", "transProbs.json",
     "transProbs2.json", "emmitProbs.json", "emmitProbs2.json",
+    "bmesStateStats.json",
     "tagStartProbs.json", "tagTransProbs.json", "tagTransProbs2.json",
     "tagEmitProbs.json", "PosLexicon.json",
 )

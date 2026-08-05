@@ -89,7 +89,10 @@ impl Segmenter {
             bmes_model,
             pos_model,
             affect_model,
-            lingxi_core::SegmenterOptions { custom_lexicons },
+            lingxi_core::SegmenterOptions {
+                custom_lexicons,
+                ..Default::default()
+            },
         )
         .map(|inner| Segmenter { inner })
         .map_err(|error| JsError::new(&error.to_string()))

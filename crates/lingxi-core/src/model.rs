@@ -94,6 +94,24 @@ pub struct BmesModel {
     pub emit2_unknown: [[f32; 4]; 4],
 }
 
+/// 由 BMES state marginal 與逐字 support/count 產生的平滑反向發射模型。
+/// 與主 BmesModel 分離，讓既有 LXA2 資產保持可載入。
+#[derive(Serialize, Deserialize)]
+pub struct BmesReverseModel {
+    /// 與 BmesModel 相同且排序一致的字元表。
+    pub chars: CharTable,
+    /// 全語料位置邊際 P(state)，索引 [B, M, E, S]。
+    pub state_marginals: [f32; 4],
+    /// 每字元觀察次數，與 chars 平行。
+    pub char_support: Vec<u32>,
+    /// 平滑後 log P(state | char)，每字元一列 [state]。
+    pub log_probs: Vec<[f32; 4]>,
+    /// 未見字元退回全域 state marginal 的 log 機率。
+    pub log_unknown: [f32; 4],
+    /// Dirichlet prior 的總濃度。
+    pub prior_strength: f32,
+}
+
 // ---------------------------------------------------------------------------
 // POS 標註 HMM（joint state：BMES × 詞性）
 // ---------------------------------------------------------------------------

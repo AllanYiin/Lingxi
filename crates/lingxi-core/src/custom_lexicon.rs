@@ -33,11 +33,21 @@ pub struct CustomLexiconSpec {
     pub entries: Vec<CustomLexiconEntry>,
 }
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug)]
 pub struct SegmenterOptions {
     pub custom_lexicons: Vec<CustomLexiconSpec>,
+    /// OOV token 首字的 log P(B/S | char) 特徵權重；預設 0.25，0 維持舊行為。
+    pub reverse_emission_weight: f32,
 }
 
+impl Default for SegmenterOptions {
+    fn default() -> Self {
+        Self {
+            custom_lexicons: Vec::new(),
+            reverse_emission_weight: 0.25,
+        }
+    }
+}
 fn default_true() -> bool {
     true
 }
@@ -81,5 +91,10 @@ mod tests {
         assert_eq!(parse_custom_lexicon(text).unwrap().priority, 0);
         let with_frequency = r#"{"schemaVersion":1,"id":"x","domain":"x","entries":[{"word":"甲乙","frequency":9}]}"#;
         assert!(parse_custom_lexicon(with_frequency).is_err());
+    }
+
+    #[test]
+    fn reverse_emission_defaults_to_trident_selected_weight() {
+        assert_eq!(SegmenterOptions::default().reverse_emission_weight, 0.25);
     }
 }

@@ -238,12 +238,33 @@ def build_bmes(
         }
         for char, counts in sorted(reverse_emit.items())
     }
+    state_counts = {state: sum(emit1[state].values()) for state in BMES}
+    total_state_count = sum(state_counts.values())
+    if total_state_count <= 0:
+        raise ValueError("BMES state count 不可為 0")
+    state_marginals = {
+        state: state_counts[state] / total_state_count for state in BMES
+    }
+    bmes_state_stats = {
+        "schema_version": 1,
+        "states": list(BMES),
+        "state_counts": state_counts,
+        "state_marginals": state_marginals,
+        "characters": {
+            char: {
+                "support": sum(counts.values()),
+                "state_counts": [counts.get(state, 0) for state in BMES],
+            }
+            for char, counts in sorted(reverse_emit.items())
+        },
+    }
     dump_json(output_dir / "startProbs.json", start_probs)
     dump_json(output_dir / "transProbs.json", trans_probs)
     dump_json(output_dir / "transProbs2.json", trans2_probs)
     dump_json(output_dir / "emmitProbs.json", emit1_probs)
     dump_json(output_dir / "emmitProbs2.json", emit2_probs)
     dump_json(output_dir / "r_emmitProbs.json", reverse_probs)
+    dump_json(output_dir / "bmesStateStats.json", bmes_state_stats)
 
 
 def joint_state_candidates(tags: Sequence[str]) -> list[str]:

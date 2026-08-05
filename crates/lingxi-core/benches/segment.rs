@@ -42,9 +42,14 @@ fn bench_segment(c: &mut Criterion) {
                 .collect(),
         })
         .collect();
-    let custom_seg =
-        Segmenter::from_asset_dir_with_options(dir, SegmenterOptions { custom_lexicons })
-            .expect("50,000 詞 benchmark 辭典應可載入");
+    let custom_seg = Segmenter::from_asset_dir_with_options(
+        dir,
+        SegmenterOptions {
+            custom_lexicons,
+            ..Default::default()
+        },
+    )
+    .expect("50,000 詞 benchmark 辭典應可載入");
     let long_10k: String = PARA.chars().cycle().take(10_000).collect();
     let long_20k: String = PARA.chars().cycle().take(20_000).collect();
     let long_40k: String = PARA.chars().cycle().take(40_000).collect();

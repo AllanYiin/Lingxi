@@ -120,7 +120,10 @@ pub unsafe extern "C" fn lingxi_new_from_dir_v2(
     };
     match lingxi_core::Segmenter::from_asset_dir_with_options(
         dir,
-        lingxi_core::SegmenterOptions { custom_lexicons },
+        lingxi_core::SegmenterOptions {
+            custom_lexicons,
+            ..Default::default()
+        },
     ) {
         Ok(seg) => {
             let tag_cstrings = (0..=u8::MAX)
