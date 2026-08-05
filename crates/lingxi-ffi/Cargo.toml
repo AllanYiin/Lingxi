@@ -11,3 +11,4 @@ crate-type = ["cdylib", "staticlib"]
 
 [dependencies]
 lingxi-core = { path = "../lingxi-core" }
+serde_json = { workspace = true }

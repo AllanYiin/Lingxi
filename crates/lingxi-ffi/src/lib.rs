@@ -90,6 +90,51 @@ pub unsafe extern "C" fn lingxi_new_from_dir_ex(
     }
 }
 
+/// 以 JSON array 載入多份結構化自訂辭典；不修改既有 constructor ABI。
+///
+/// # Safety
+/// dir 必須指向有效 NUL 結尾 UTF-8 字串；lexicons_json_utf8 在長度非零時
+/// 必須指向至少 lexicons_json_len bytes 的有效緩衝。
+#[no_mangle]
+pub unsafe extern "C" fn lingxi_new_from_dir_v2(
+    dir: *const c_char,
+    lexicons_json_utf8: *const u8,
+    lexicons_json_len: usize,
+) -> *mut LingxiHandle {
+    if dir.is_null() {
+        return std::ptr::null_mut();
+    }
+    let Ok(dir) = CStr::from_ptr(dir).to_str() else {
+        return std::ptr::null_mut();
+    };
+    let Some(json) = utf8_from_raw(lexicons_json_utf8, lexicons_json_len) else {
+        return std::ptr::null_mut();
+    };
+    let custom_lexicons = if json.is_empty() {
+        Vec::new()
+    } else {
+        match serde_json::from_str(json) {
+            Ok(value) => value,
+            Err(_) => return std::ptr::null_mut(),
+        }
+    };
+    match lingxi_core::Segmenter::from_asset_dir_with_options(
+        dir,
+        lingxi_core::SegmenterOptions { custom_lexicons },
+    ) {
+        Ok(seg) => {
+            let tag_cstrings = (0..=u8::MAX)
+                .map_while(|index| {
+                    let name = seg.try_tag_name(index)?;
+                    Some(CString::new(name).expect("詞性名稱不含 NUL"))
+                })
+                .collect();
+            Box::into_raw(Box::new(LingxiHandle { seg, tag_cstrings }))
+        }
+        Err(_) => std::ptr::null_mut(),
+    }
+}
+
 /// 釋放分詞器。
 ///
 /// # Safety
@@ -150,6 +195,75 @@ pub unsafe extern "C" fn lingxi_tokens_free(t: *mut LingxiTokens) {
         tokens.items,
         tokens.count,
     )));
+}
+
+/// UTF-8 JSON 結果；data 為 NUL 結尾且 len 不含 NUL。
+#[repr(C)]
+pub struct LingxiUtf8 {
+    pub len: usize,
+    pub data: *mut c_char,
+}
+
+/// 分詞＋詞性＋情感，回傳 JSON array。
+///
+/// # Safety
+/// h 必須為有效且尚未釋放的 handle；utf8 在長度非零時必須指向至少
+/// len bytes 的有效 UTF-8 緩衝。回傳值須以 lingxi_utf8_free 釋放。
+#[no_mangle]
+pub unsafe extern "C" fn lingxi_annotate_json(
+    h: *const LingxiHandle,
+    utf8: *const u8,
+    len: usize,
+) -> *mut LingxiUtf8 {
+    if h.is_null() {
+        return std::ptr::null_mut();
+    }
+    let Some(text) = utf8_from_raw(utf8, len) else {
+        return std::ptr::null_mut();
+    };
+    let handle = &*h;
+    let value: Vec<_> = handle
+        .seg
+        .annotate(text)
+        .into_iter()
+        .map(|item| {
+            let token = item.token;
+            serde_json::json!({
+                "word": &text[token.byte_start..token.byte_end],
+                "tag": handle.seg.tag_name(token.tag),
+                "byteStart": token.byte_start,
+                "byteEnd": token.byte_end,
+                "affect": item.affect,
+                "source": item.source,
+            })
+        })
+        .collect();
+    let Ok(json) = serde_json::to_string(&value) else {
+        return std::ptr::null_mut();
+    };
+    let len = json.len();
+    let Ok(data) = CString::new(json) else {
+        return std::ptr::null_mut();
+    };
+    Box::into_raw(Box::new(LingxiUtf8 {
+        len,
+        data: data.into_raw(),
+    }))
+}
+
+/// 釋放 lingxi_annotate_json 結果。
+///
+/// # Safety
+/// value 必須為 lingxi_annotate_json 回傳且尚未釋放的指標；NULL 為 no-op。
+#[no_mangle]
+pub unsafe extern "C" fn lingxi_utf8_free(value: *mut LingxiUtf8) {
+    if value.is_null() {
+        return;
+    }
+    let value = Box::from_raw(value);
+    if !value.data.is_null() {
+        drop(CString::from_raw(value.data));
+    }
 }
 
 /// 一個關鍵字：NUL 結尾 UTF-8 詞字串（結果持有，隨結果釋放）+ 權重。

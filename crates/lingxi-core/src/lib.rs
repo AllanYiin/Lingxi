@@ -4,7 +4,9 @@
 //! POS Viterbi（OOV 詞性）→ post hooks。
 //! 本 crate 只含演算法與模型載入，平行化與 I/O 由上層（CLI / bindings）負責。
 
+pub mod affect;
 pub mod chunk;
+pub mod custom_lexicon;
 pub mod dag;
 pub mod dict;
 pub mod keyword;
@@ -16,7 +18,16 @@ pub mod userdict;
 
 use std::path::Path;
 
+use affect::AffectStore;
+pub use affect::{
+    build_affect_model, parse_affect_lexicon, parse_taxonomy, AffectAnnotation, AffectInput,
+    AffectLexiconFile, AffectModel, AffectModelEntry, AffectSourceEntry, AffectStats, EmotionLabel,
+    EmotionTaxonomy, Polarity,
+};
 use chunk::ChunkKind;
+pub use custom_lexicon::{
+    parse_custom_lexicon, CustomLexiconEntry, CustomLexiconSpec, SegmenterOptions,
+};
 use dict::Dict;
 pub use keyword::{Keyword, KeywordOptions};
 pub use rules::{known_rules, RuleAction, RuleBucket, RuleInfo, RuleStatus, RuleTrace};
@@ -34,6 +45,23 @@ pub struct Token {
     pub byte_start: usize,
     pub byte_end: usize,
     pub tag: u8,
+}
+
+/// 結構化自訂辭典的命中來源。
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LexiconSource {
+    pub id: String,
+    pub domain: String,
+    pub priority: i8,
+}
+
+/// 不改變既有 Token 的可選詞級情感標註結果。
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AnnotatedToken {
+    pub token: Token,
+    pub affect: Option<AffectAnnotation>,
+    pub source: Option<LexiconSource>,
 }
 
 /// 非中文詞段的內建詞性 id（統一詞性表索引）。
@@ -67,6 +95,7 @@ pub struct Segmenter {
     /// 詞典 tag id → POS 模型 tag id（runtime 詞典 lexical fallback）。
     dict_to_pos: Vec<Option<u8>>,
     builtin: BuiltinTags,
+    affect: AffectStore,
 }
 
 /// 模型載入錯誤。
@@ -75,6 +104,8 @@ pub enum LoadError {
     Io(std::io::Error),
     Asset(model::AssetError),
     UserDict(String),
+    CustomLexicon(String),
+    Affect(String),
     TooManyTags(usize),
     InvalidOptions(String),
 }
@@ -84,7 +115,9 @@ impl std::fmt::Display for LoadError {
         match self {
             LoadError::Io(e) => write!(f, "讀取模型檔失敗: {e}"),
             LoadError::Asset(e) => write!(f, "{e}"),
-            LoadError::UserDict(e) => write!(f, "載入自訂詞典失敗: {e}"),
+            LoadError::UserDict(e) => write!(f, "載入 legacy 自訂詞典失敗: {e}"),
+            LoadError::CustomLexicon(e) => write!(f, "載入多領域自訂辭典失敗: {e}"),
+            LoadError::Affect(e) => write!(f, "載入情感詞典失敗: {e}"),
             LoadError::TooManyTags(n) => {
                 write!(f, "統一詞性表共有 {n} 種，超過 u8 可表示的 256 種")
             }
@@ -101,10 +134,22 @@ fn load_asset<T: serde::de::DeserializeOwned>(path: &Path) -> Result<T, LoadErro
     model::decode_asset(&bytes).map_err(LoadError::Asset)
 }
 
+fn load_optional_asset<T: serde::de::DeserializeOwned>(
+    path: &Path,
+) -> Result<Option<T>, LoadError> {
+    match std::fs::read(path) {
+        Ok(bytes) => model::decode_asset(&bytes)
+            .map(Some)
+            .map_err(LoadError::Asset),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(LoadError::Io(error)),
+    }
+}
+
 impl Segmenter {
-    /// Load dict.bin, hmm_bmes.bin and hmm_pos.bin from an asset directory.
+    /// 從資產目錄載入；affect.bin 缺少時退化為無情感標註。
     pub fn from_asset_dir(dir: impl AsRef<Path>) -> Result<Self, LoadError> {
-        Self::from_asset_dir_with_user_dict(dir, &[])
+        Self::from_asset_dir_with_options(dir, SegmenterOptions::default())
     }
 
     pub fn from_asset_dir_with_user_dict(
@@ -112,11 +157,44 @@ impl Segmenter {
         user_entries: &[UserDictEntry],
     ) -> Result<Self, LoadError> {
         let dir = dir.as_ref();
-        Self::from_models_with_user_dict(
+        Self::from_models_with_all(
             load_asset(&dir.join("dict.bin"))?,
             load_asset(&dir.join("hmm_bmes.bin"))?,
             load_asset(&dir.join("hmm_pos.bin"))?,
+            load_optional_asset(&dir.join("affect.bin"))?,
             user_entries,
+            SegmenterOptions::default(),
+        )
+    }
+
+    pub fn from_asset_dir_with_user_dict_and_options(
+        dir: impl AsRef<Path>,
+        user_entries: &[UserDictEntry],
+        options: SegmenterOptions,
+    ) -> Result<Self, LoadError> {
+        let dir = dir.as_ref();
+        Self::from_models_with_all(
+            load_asset(&dir.join("dict.bin"))?,
+            load_asset(&dir.join("hmm_bmes.bin"))?,
+            load_asset(&dir.join("hmm_pos.bin"))?,
+            load_optional_asset(&dir.join("affect.bin"))?,
+            user_entries,
+            options,
+        )
+    }
+
+    pub fn from_asset_dir_with_options(
+        dir: impl AsRef<Path>,
+        options: SegmenterOptions,
+    ) -> Result<Self, LoadError> {
+        let dir = dir.as_ref();
+        Self::from_models_with_all(
+            load_asset(&dir.join("dict.bin"))?,
+            load_asset(&dir.join("hmm_bmes.bin"))?,
+            load_asset(&dir.join("hmm_pos.bin"))?,
+            load_optional_asset(&dir.join("affect.bin"))?,
+            &[],
+            options,
         )
     }
 
@@ -125,7 +203,14 @@ impl Segmenter {
         bmes: model::BmesModel,
         pos: model::PosModel,
     ) -> Result<Self, LoadError> {
-        Self::from_models_with_user_dict(dict_model, bmes, pos, &[])
+        Self::from_models_with_all(
+            dict_model,
+            bmes,
+            pos,
+            None,
+            &[],
+            SegmenterOptions::default(),
+        )
     }
 
     pub fn from_models_with_user_dict(
@@ -134,11 +219,47 @@ impl Segmenter {
         pos: model::PosModel,
         user_entries: &[UserDictEntry],
     ) -> Result<Self, LoadError> {
+        Self::from_models_with_all(
+            dict_model,
+            bmes,
+            pos,
+            None,
+            user_entries,
+            SegmenterOptions::default(),
+        )
+    }
+
+    pub fn from_models_with_options(
+        dict_model: model::DictModel,
+        bmes: model::BmesModel,
+        pos: model::PosModel,
+        affect_model: Option<AffectModel>,
+        options: SegmenterOptions,
+    ) -> Result<Self, LoadError> {
+        Self::from_models_with_all(dict_model, bmes, pos, affect_model, &[], options)
+    }
+
+    fn from_models_with_all(
+        dict_model: model::DictModel,
+        bmes: model::BmesModel,
+        pos: model::PosModel,
+        affect_model: Option<AffectModel>,
+        user_entries: &[UserDictEntry],
+        options: SegmenterOptions,
+    ) -> Result<Self, LoadError> {
         let mut dict = Dict::from_model(dict_model);
         let mut dictionary_entries = parse_user_dict(CURATED_DICTIONARY);
         dictionary_entries.extend_from_slice(user_entries);
         dict.install_user_dict(&dictionary_entries)
             .map_err(LoadError::UserDict)?;
+        dict.install_custom_lexicons(&options.custom_lexicons)
+            .map_err(LoadError::CustomLexicon)?;
+
+        let affect =
+            AffectStore::from_model_and_custom(affect_model, &options.custom_lexicons, |word| {
+                dict.normalize(word).into_owned()
+            })
+            .map_err(LoadError::Affect)?;
 
         let mut tags: Vec<String> = Vec::new();
         let dict_tag_map: Vec<u8> = dict
@@ -181,6 +302,7 @@ impl Segmenter {
             pos_tag_map,
             dict_to_pos,
             builtin,
+            affect,
         })
     }
 
@@ -229,6 +351,53 @@ impl Segmenter {
     /// 分詞＋詞性標註。
     pub fn tokenize(&self, text: &str) -> Vec<Token> {
         self.tokenize_with_trace(text).0
+    }
+
+    /// 分詞＋詞性＋可選詞級情感；不進行句級或上下文情緒推論。
+    pub fn annotate(&self, text: &str) -> Vec<AnnotatedToken> {
+        let normalized = self.dict.normalize(text);
+        let segments = self.cut_normalized_with_trace(&normalized).0;
+        let tags = self.tag_segments(&normalized, &segments);
+        segments
+            .into_iter()
+            .zip(tags)
+            .map(|(segment, tag)| {
+                let token = Token {
+                    byte_start: segment.byte_start,
+                    byte_end: segment.byte_end,
+                    tag,
+                };
+                let word = &normalized[token.byte_start..token.byte_end];
+                let source = match segment.kind {
+                    SegKind::Dict(word_id) => {
+                        self.dict
+                            .custom_source(word_id)
+                            .map(|(id, domain, priority)| LexiconSource {
+                                id: id.to_owned(),
+                                domain: domain.to_owned(),
+                                priority,
+                            })
+                    }
+                    _ => None,
+                };
+                AnnotatedToken {
+                    token,
+                    affect: self.affect.get(word).cloned(),
+                    source,
+                }
+            })
+            .collect()
+    }
+
+    /// 直接查詢單一完整詞形的情感資料。
+    pub fn affect_for_word(&self, word: &str) -> Option<&AffectAnnotation> {
+        let normalized = self.dict.normalize(word);
+        self.affect.get(&normalized)
+    }
+
+    /// 已載入的詞級情感資產統計；不包含待分析原文。
+    pub fn affect_stats(&self) -> &AffectStats {
+        self.affect.stats()
     }
 
     /// 分詞＋詞性標註，並回傳實際觸發的規則 trace。
@@ -309,7 +478,9 @@ impl Segmenter {
                         m.byte_start,
                         m.byte_end,
                         m.word_id,
-                        self.dict.log_prob(m.word_id),
+                        m.custom_bias
+                            .map(|value| value as f32)
+                            .unwrap_or_else(|| self.dict.log_prob(m.word_id)),
                     )
                 })
             })

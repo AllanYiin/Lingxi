@@ -41,6 +41,11 @@ typedef struct LingxiKeywords {
     LingxiKeyword *items;
 } LingxiKeywords;
 
+typedef struct LingxiUtf8 {
+    size_t len;
+    char *data;
+} LingxiUtf8;
+
 /* 從資產目錄（含 dict.bin / hmm_bmes.bin / hmm_pos.bin）建立；失敗回 NULL。 */
 LingxiHandle *lingxi_new_from_dir(const char *dir);
 
@@ -50,12 +55,22 @@ LingxiHandle *lingxi_new_from_dir_ex(const char *dir,
                                      const uint8_t *user_dict_utf8,
                                      size_t user_dict_len);
 
+/* 載入 CustomLexiconSpec JSON array；NULL/0 表示空 array。 */
+LingxiHandle *lingxi_new_from_dir_v2(const char *dir,
+                                     const uint8_t *lexicons_json_utf8,
+                                     size_t lexicons_json_len);
+
 void lingxi_free(LingxiHandle *h);
 
 /* 對 UTF-8 文字（長度 len，不需 NUL 結尾）分詞＋詞性；非法 UTF-8 回 NULL。 */
 LingxiTokens *lingxi_tokenize(const LingxiHandle *h, const uint8_t *utf8, size_t len);
 
 void lingxi_tokens_free(LingxiTokens *t);
+
+/* 詞級情感標註 JSON；結果以 lingxi_utf8_free 釋放。 */
+LingxiUtf8 *lingxi_annotate_json(const LingxiHandle *h,
+                                 const uint8_t *utf8, size_t len);
+void lingxi_utf8_free(LingxiUtf8 *value);
 
 /* TextRank 關鍵字抽取，權重降冪，最多 top_k 個；非法 UTF-8 回 NULL。 */
 LingxiKeywords *lingxi_extract_keywords(const LingxiHandle *h,

@@ -129,3 +129,78 @@ fn proper_noun_channel_is_independent_and_can_be_disabled() {
         "停用專有名詞通道後應完全遵循一般詞性白名單: {entity_disabled:?}"
     );
 }
+
+#[test]
+fn structured_lexicon_is_frequency_free_and_affect_is_multi_label() {
+    let read_model = |name: &str| std::fs::read(format!("{ASSET_DIR}/{name}"));
+    let (Ok(dict), Ok(bmes), Ok(pos)) = (
+        read_model("dict.bin"),
+        read_model("hmm_bmes.bin"),
+        read_model("hmm_pos.bin"),
+    ) else {
+        eprintln!("assets 不存在，跳過");
+        return;
+    };
+    let taxonomy = lingxi_core::parse_taxonomy(include_str!(
+        "../../../resources/affect/emotion-taxonomy.json"
+    ))
+    .unwrap();
+    let lexicon = lingxi_core::parse_affect_lexicon(include_str!(
+        "../../../resources/affect/emotion-lexicon.json"
+    ))
+    .unwrap();
+    let affect = lingxi_core::build_affect_model(taxonomy, lexicon).unwrap();
+    let affect_bytes = lingxi_core::model::encode_asset(&affect);
+    let affect: lingxi_core::AffectModel =
+        lingxi_core::model::decode_asset(&affect_bytes).expect("affect.bin 應可 round-trip");
+    let custom = lingxi_core::parse_custom_lexicon(
+        r#"{
+          "schemaVersion": 1,
+          "id": "medical-tw",
+          "domain": "medical",
+          "priority": 3,
+          "entries": [{"word": "板南線", "pos": "Na"}, {"word": "A肝", "pos": "Na"}]
+        }"#,
+    )
+    .unwrap();
+    let seg = Segmenter::from_models_with_options(
+        lingxi_core::model::decode_asset(&dict).unwrap(),
+        lingxi_core::model::decode_asset(&bmes).unwrap(),
+        lingxi_core::model::decode_asset(&pos).unwrap(),
+        Some(affect),
+        lingxi_core::SegmenterOptions {
+            custom_lexicons: vec![custom],
+        },
+    )
+    .unwrap();
+
+    let baseline = Segmenter::from_asset_dir(ASSET_DIR).unwrap();
+    let unrelated = "行政院公布最新經濟成長率";
+    assert_eq!(
+        seg.cut(unrelated),
+        baseline.cut(unrelated),
+        "不含自訂詞的句子切分必須不變"
+    );
+
+    let words = seg.cut("搭板南線後感到欣慰");
+    assert!(words.contains(&"板南線"), "{words:?}");
+    assert!(seg.cut("A肝研究").contains(&"A肝"));
+    let custom_annotation = seg
+        .annotate("搭板南線")
+        .into_iter()
+        .find(|item| &"搭板南線"[item.token.byte_start..item.token.byte_end] == "板南線")
+        .expect("板南線應維持完整詞界");
+    let source = custom_annotation.source.expect("應保留自訂辭典來源");
+    assert_eq!(source.id, "medical-tw");
+    assert_eq!(source.domain, "medical");
+    assert_eq!(source.priority, 3);
+
+    let annotations = seg.annotate("感到欣慰");
+    let item = annotations
+        .iter()
+        .find(|item| &"感到欣慰"[item.token.byte_start..item.token.byte_end] == "欣慰")
+        .expect("欣慰應維持完整詞界");
+    let affect = item.affect.as_ref().expect("欣慰應有情感標註");
+    assert_eq!(affect.emotions, ["joy.joy", "joy.relief"]);
+    assert_eq!(affect.polarity, lingxi_core::Polarity::Positive);
+}

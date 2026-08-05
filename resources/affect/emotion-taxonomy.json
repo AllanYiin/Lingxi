@@ -1,0 +1,534 @@
+{
+  "schemaVersion": 1,
+  "version": "1.0.0",
+  "labels": [
+    {
+      "id": "joy.joy",
+      "nameZhTw": "喜悅",
+      "family": "joy",
+      "defaultPolarity": "positive",
+      "description": "詞彙表達「喜悅」的情緒或心理狀態。",
+      "examples": [
+        "開心"
+      ],
+      "enabled": true
+    },
+    {
+      "id": "joy.amusement",
+      "nameZhTw": "歡樂",
+      "family": "joy",
+      "defaultPolarity": "positive",
+      "description": "詞彙表達「歡樂」的情緒或心理狀態。",
+      "examples": [
+        "逗趣"
+      ],
+      "enabled": true
+    },
+    {
+      "id": "joy.excitement",
+      "nameZhTw": "興奮",
+      "family": "joy",
+      "defaultPolarity": "positive",
+      "description": "詞彙表達「興奮」的情緒或心理狀態。",
+      "examples": [
+        "雀躍"
+      ],
+      "enabled": true
+    },
+    {
+      "id": "joy.contentment",
+      "nameZhTw": "滿足",
+      "family": "joy",
+      "defaultPolarity": "positive",
+      "description": "詞彙表達「滿足」的情緒或心理狀態。",
+      "examples": [
+        "知足"
+      ],
+      "enabled": true
+    },
+    {
+      "id": "joy.relief",
+      "nameZhTw": "安心",
+      "family": "joy",
+      "defaultPolarity": "positive",
+      "description": "詞彙表達「安心」的情緒或心理狀態。",
+      "examples": [
+        "欣慰"
+      ],
+      "enabled": true
+    },
+    {
+      "id": "affection.love",
+      "nameZhTw": "喜愛",
+      "family": "affection",
+      "defaultPolarity": "positive",
+      "description": "詞彙表達「喜愛」的情緒或心理狀態。",
+      "examples": [
+        "喜歡"
+      ],
+      "enabled": true
+    },
+    {
+      "id": "affection.caring",
+      "nameZhTw": "關懷",
+      "family": "affection",
+      "defaultPolarity": "positive",
+      "description": "詞彙表達「關懷」的情緒或心理狀態。",
+      "examples": [
+        "關心"
+      ],
+      "enabled": true
+    },
+    {
+      "id": "affection.gratitude",
+      "nameZhTw": "感激",
+      "family": "affection",
+      "defaultPolarity": "positive",
+      "description": "詞彙表達「感激」的情緒或心理狀態。",
+      "examples": [
+        "感謝"
+      ],
+      "enabled": true
+    },
+    {
+      "id": "esteem.admiration",
+      "nameZhTw": "欣賞",
+      "family": "esteem",
+      "defaultPolarity": "positive",
+      "description": "詞彙表達「欣賞」的情緒或心理狀態。",
+      "examples": [
+        "敬佩"
+      ],
+      "enabled": true
+    },
+    {
+      "id": "esteem.approval",
+      "nameZhTw": "認同",
+      "family": "esteem",
+      "defaultPolarity": "positive",
+      "description": "詞彙表達「認同」的情緒或心理狀態。",
+      "examples": [
+        "贊同"
+      ],
+      "enabled": true
+    },
+    {
+      "id": "esteem.pride",
+      "nameZhTw": "自豪",
+      "family": "esteem",
+      "defaultPolarity": "positive",
+      "description": "詞彙表達「自豪」的情緒或心理狀態。",
+      "examples": [
+        "驕傲"
+      ],
+      "enabled": true
+    },
+    {
+      "id": "outlook.hope",
+      "nameZhTw": "希望",
+      "family": "outlook",
+      "defaultPolarity": "positive",
+      "description": "詞彙表達「希望」的情緒或心理狀態。",
+      "examples": [
+        "盼望"
+      ],
+      "enabled": true
+    },
+    {
+      "id": "outlook.optimism",
+      "nameZhTw": "樂觀",
+      "family": "outlook",
+      "defaultPolarity": "positive",
+      "description": "詞彙表達「樂觀」的情緒或心理狀態。",
+      "examples": [
+        "看好"
+      ],
+      "enabled": true
+    },
+    {
+      "id": "outlook.anticipation",
+      "nameZhTw": "期待",
+      "family": "outlook",
+      "defaultPolarity": "positive",
+      "description": "詞彙表達「期待」的情緒或心理狀態。",
+      "examples": [
+        "期盼"
+      ],
+      "enabled": true
+    },
+    {
+      "id": "outlook.desire",
+      "nameZhTw": "渴望",
+      "family": "outlook",
+      "defaultPolarity": "contextual",
+      "description": "詞彙表達「渴望」的情緒或心理狀態。",
+      "examples": [
+        "嚮往"
+      ],
+      "enabled": true
+    },
+    {
+      "id": "outlook.confidence",
+      "nameZhTw": "自信",
+      "family": "outlook",
+      "defaultPolarity": "positive",
+      "description": "詞彙表達「自信」的情緒或心理狀態。",
+      "examples": [
+        "有把握"
+      ],
+      "enabled": true
+    },
+    {
+      "id": "outlook.trust",
+      "nameZhTw": "信任",
+      "family": "outlook",
+      "defaultPolarity": "positive",
+      "description": "詞彙表達「信任」的情緒或心理狀態。",
+      "examples": [
+        "信賴"
+      ],
+      "enabled": true
+    },
+    {
+      "id": "sadness.sadness",
+      "nameZhTw": "悲傷",
+      "family": "sadness",
+      "defaultPolarity": "negative",
+      "description": "詞彙表達「悲傷」的情緒或心理狀態。",
+      "examples": [
+        "難過"
+      ],
+      "enabled": true
+    },
+    {
+      "id": "sadness.grief",
+      "nameZhTw": "悲痛",
+      "family": "sadness",
+      "defaultPolarity": "negative",
+      "description": "詞彙表達「悲痛」的情緒或心理狀態。",
+      "examples": [
+        "哀慟"
+      ],
+      "enabled": true
+    },
+    {
+      "id": "sadness.disappointment",
+      "nameZhTw": "失望",
+      "family": "sadness",
+      "defaultPolarity": "negative",
+      "description": "詞彙表達「失望」的情緒或心理狀態。",
+      "examples": [
+        "心寒"
+      ],
+      "enabled": true
+    },
+    {
+      "id": "sadness.loneliness",
+      "nameZhTw": "孤獨",
+      "family": "sadness",
+      "defaultPolarity": "negative",
+      "description": "詞彙表達「孤獨」的情緒或心理狀態。",
+      "examples": [
+        "寂寞"
+      ],
+      "enabled": true
+    },
+    {
+      "id": "sadness.hurt",
+      "nameZhTw": "受傷",
+      "family": "sadness",
+      "defaultPolarity": "negative",
+      "description": "詞彙表達「受傷」的情緒或心理狀態。",
+      "examples": [
+        "心痛"
+      ],
+      "enabled": true
+    },
+    {
+      "id": "fear.fear",
+      "nameZhTw": "恐懼",
+      "family": "fear",
+      "defaultPolarity": "negative",
+      "description": "詞彙表達「恐懼」的情緒或心理狀態。",
+      "examples": [
+        "害怕"
+      ],
+      "enabled": true
+    },
+    {
+      "id": "fear.anxiety",
+      "nameZhTw": "焦慮",
+      "family": "fear",
+      "defaultPolarity": "negative",
+      "description": "詞彙表達「焦慮」的情緒或心理狀態。",
+      "examples": [
+        "焦躁"
+      ],
+      "enabled": true
+    },
+    {
+      "id": "fear.worry",
+      "nameZhTw": "擔憂",
+      "family": "fear",
+      "defaultPolarity": "negative",
+      "description": "詞彙表達「擔憂」的情緒或心理狀態。",
+      "examples": [
+        "憂心"
+      ],
+      "enabled": true
+    },
+    {
+      "id": "fear.nervousness",
+      "nameZhTw": "緊張",
+      "family": "fear",
+      "defaultPolarity": "negative",
+      "description": "詞彙表達「緊張」的情緒或心理狀態。",
+      "examples": [
+        "忐忑"
+      ],
+      "enabled": true
+    },
+    {
+      "id": "anger.anger",
+      "nameZhTw": "憤怒",
+      "family": "anger",
+      "defaultPolarity": "negative",
+      "description": "詞彙表達「憤怒」的情緒或心理狀態。",
+      "examples": [
+        "生氣"
+      ],
+      "enabled": true
+    },
+    {
+      "id": "anger.annoyance",
+      "nameZhTw": "煩躁",
+      "family": "anger",
+      "defaultPolarity": "negative",
+      "description": "詞彙表達「煩躁」的情緒或心理狀態。",
+      "examples": [
+        "不耐煩"
+      ],
+      "enabled": true
+    },
+    {
+      "id": "anger.frustration",
+      "nameZhTw": "挫折",
+      "family": "anger",
+      "defaultPolarity": "negative",
+      "description": "詞彙表達「挫折」的情緒或心理狀態。",
+      "examples": [
+        "受挫"
+      ],
+      "enabled": true
+    },
+    {
+      "id": "anger.rage",
+      "nameZhTw": "暴怒",
+      "family": "anger",
+      "defaultPolarity": "negative",
+      "description": "詞彙表達「暴怒」的情緒或心理狀態。",
+      "examples": [
+        "震怒"
+      ],
+      "enabled": true
+    },
+    {
+      "id": "aversion.dislike",
+      "nameZhTw": "不喜歡",
+      "family": "aversion",
+      "defaultPolarity": "negative",
+      "description": "詞彙表達「不喜歡」的情緒或心理狀態。",
+      "examples": [
+        "討厭"
+      ],
+      "enabled": true
+    },
+    {
+      "id": "aversion.disgust",
+      "nameZhTw": "厭惡",
+      "family": "aversion",
+      "defaultPolarity": "negative",
+      "description": "詞彙表達「厭惡」的情緒或心理狀態。",
+      "examples": [
+        "噁心"
+      ],
+      "enabled": true
+    },
+    {
+      "id": "aversion.contempt",
+      "nameZhTw": "輕蔑",
+      "family": "aversion",
+      "defaultPolarity": "negative",
+      "description": "詞彙表達「輕蔑」的情緒或心理狀態。",
+      "examples": [
+        "鄙視"
+      ],
+      "enabled": true
+    },
+    {
+      "id": "aversion.hate",
+      "nameZhTw": "憎恨",
+      "family": "aversion",
+      "defaultPolarity": "negative",
+      "description": "詞彙表達「憎恨」的情緒或心理狀態。",
+      "examples": [
+        "痛恨"
+      ],
+      "enabled": true
+    },
+    {
+      "id": "self_conscious.embarrassment",
+      "nameZhTw": "尷尬",
+      "family": "self_conscious",
+      "defaultPolarity": "negative",
+      "description": "詞彙表達「尷尬」的情緒或心理狀態。",
+      "examples": [
+        "難為情"
+      ],
+      "enabled": true
+    },
+    {
+      "id": "self_conscious.shame",
+      "nameZhTw": "羞恥",
+      "family": "self_conscious",
+      "defaultPolarity": "negative",
+      "description": "詞彙表達「羞恥」的情緒或心理狀態。",
+      "examples": [
+        "羞愧"
+      ],
+      "enabled": true
+    },
+    {
+      "id": "self_conscious.guilt",
+      "nameZhTw": "內疚",
+      "family": "self_conscious",
+      "defaultPolarity": "negative",
+      "description": "詞彙表達「內疚」的情緒或心理狀態。",
+      "examples": [
+        "愧疚"
+      ],
+      "enabled": true
+    },
+    {
+      "id": "self_conscious.regret",
+      "nameZhTw": "後悔",
+      "family": "self_conscious",
+      "defaultPolarity": "negative",
+      "description": "詞彙表達「後悔」的情緒或心理狀態。",
+      "examples": [
+        "懊悔"
+      ],
+      "enabled": true
+    },
+    {
+      "id": "self_conscious.inferiority",
+      "nameZhTw": "自卑",
+      "family": "self_conscious",
+      "defaultPolarity": "negative",
+      "description": "詞彙表達「自卑」的情緒或心理狀態。",
+      "examples": [
+        "自慚形穢"
+      ],
+      "enabled": true
+    },
+    {
+      "id": "powerlessness.helplessness",
+      "nameZhTw": "無助",
+      "family": "powerlessness",
+      "defaultPolarity": "negative",
+      "description": "詞彙表達「無助」的情緒或心理狀態。",
+      "examples": [
+        "無奈"
+      ],
+      "enabled": true
+    },
+    {
+      "id": "powerlessness.despair",
+      "nameZhTw": "絕望",
+      "family": "powerlessness",
+      "defaultPolarity": "negative",
+      "description": "詞彙表達「絕望」的情緒或心理狀態。",
+      "examples": [
+        "心灰意冷"
+      ],
+      "enabled": true
+    },
+    {
+      "id": "social_comparison.envy",
+      "nameZhTw": "羨慕",
+      "family": "social_comparison",
+      "defaultPolarity": "contextual",
+      "description": "詞彙表達「羨慕」的情緒或心理狀態。",
+      "examples": [
+        "羨慕"
+      ],
+      "enabled": true
+    },
+    {
+      "id": "social_comparison.jealousy",
+      "nameZhTw": "嫉妒",
+      "family": "social_comparison",
+      "defaultPolarity": "negative",
+      "description": "詞彙表達「嫉妒」的情緒或心理狀態。",
+      "examples": [
+        "吃醋"
+      ],
+      "enabled": true
+    },
+    {
+      "id": "surprise.surprise",
+      "nameZhTw": "驚訝",
+      "family": "surprise",
+      "defaultPolarity": "contextual",
+      "description": "詞彙表達「驚訝」的情緒或心理狀態。",
+      "examples": [
+        "意外"
+      ],
+      "enabled": true
+    },
+    {
+      "id": "cognition.curiosity",
+      "nameZhTw": "好奇",
+      "family": "cognition",
+      "defaultPolarity": "neutral",
+      "description": "詞彙表達「好奇」的情緒或心理狀態。",
+      "examples": [
+        "好奇"
+      ],
+      "enabled": true
+    },
+    {
+      "id": "cognition.confusion",
+      "nameZhTw": "困惑",
+      "family": "cognition",
+      "defaultPolarity": "neutral",
+      "description": "詞彙表達「困惑」的情緒或心理狀態。",
+      "examples": [
+        "不解"
+      ],
+      "enabled": true
+    },
+    {
+      "id": "cognition.doubt",
+      "nameZhTw": "懷疑",
+      "family": "cognition",
+      "defaultPolarity": "neutral",
+      "description": "詞彙表達「懷疑」的情緒或心理狀態。",
+      "examples": [
+        "存疑"
+      ],
+      "enabled": true
+    },
+    {
+      "id": "detachment.indifference",
+      "nameZhTw": "冷漠",
+      "family": "detachment",
+      "defaultPolarity": "neutral",
+      "description": "詞彙表達「冷漠」的情緒或心理狀態。",
+      "examples": [
+        "漠不關心"
+      ],
+      "enabled": true
+    }
+  ]
+}

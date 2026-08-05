@@ -2,7 +2,7 @@
 
 ## Goal｜目標
 
-此 repository 目前發布原始碼，不發布可執行完整分詞所需的模型檔。`assets/*.bin` 與任何內嵌它們的 wheel、WASM bundle、ZIP 或內部交付包都不得提交到公開 GitHub repository。
+此 repository 目前發布原始碼，不發布可執行完整分詞所需的模型檔。`assets/dict.bin`、`assets/hmm_bmes.bin`、`assets/hmm_pos.bin` 與任何內嵌它們的 wheel、WASM bundle、ZIP 或內部交付包都不得提交到公開 GitHub repository。
 
 原因是目前本機模型組合至少仍包含由受限語料訓練的 POS 參數；原始碼的 MIT License 不會覆蓋模型、訓練語料或其衍生統計。
 
@@ -14,18 +14,21 @@
 assets/
 ├── dict.bin
 ├── hmm_bmes.bin
-└── hmm_pos.bin
+├── hmm_pos.bin
+└── affect.bin       # 可選
 ```
 
 - `dict.bin`：僅含多字詞的詞典、自動機與正頻率
 - `hmm_bmes.bin`：LXA2 二階 BMES 發射／轉移與 `<UNK>` 平滑
 - `hmm_pos.bin`：LXA2 二階 fixed-boundary POS 與完整詞彙 `P(tag|word)`
+- `affect.bin`：由人工維護、可再散布的 taxonomy 與情感詞典轉換；缺少時不影響分詞與 POS
 
 檔案格式由 `lingxi-core` 定義，`tools/lingxi-convert` 負責從本機 JSON 資料轉換。
 
 ## 不得公開提交的內容
 
-- `assets/*.bin`
+- `assets/dict.bin`、`assets/hmm_bmes.bin`、`assets/hmm_pos.bin`
+- `assets/affect.bin`（可由已提交來源重建；仍視為 generated artifact，不直接提交）
 - `crates/lingxi-py/python/lingxi/assets/`
 - `crates/lingxi-wasm/pkg/`
 - `dist/`

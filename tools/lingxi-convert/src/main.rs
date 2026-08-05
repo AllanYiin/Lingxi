@@ -1,7 +1,7 @@
 //! lingxi-convert：將舊版 LingXi 的 JSON 模型資產轉為 postcard 二進位。
 //!
 //! 用法（參數皆可省略，預設對應本 repo 的相對位置）：
-//!   lingxi-convert [model_dir] [out_dir]
+//!   lingxi-convert [model_dir] [out_dir] [affect_source_dir]
 //!
 //! 輸出：out_dir/dict.bin、hmm_bmes.bin、hmm_pos.bin，並列印轉換統計
 //! 與機率 spot-check 供人工對照 JSON 原值。
@@ -15,6 +15,7 @@ use daachorse::CharwiseDoubleArrayAhoCorasick;
 use serde_json::Value;
 
 use lingxi_core::model::{encode_asset, BmesModel, CharTable, DictModel, PosModel, MIN_LOG};
+use lingxi_core::{build_affect_model, parse_affect_lexicon, parse_taxonomy};
 
 /// BMES 狀態固定順序，與 lingxi_core::model 的 STATE_* 對齊。
 const STATES: [&str; 4] = ["B", "M", "E", "S"];
@@ -73,6 +74,10 @@ fn main() -> Result<()> {
         .get(1)
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from("assets"));
+    let affect_dir = args
+        .get(2)
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("resources/affect"));
     fs::create_dir_all(&out_dir)?;
 
     println!("model: {}", model_dir.display());
@@ -85,6 +90,39 @@ fn main() -> Result<()> {
     fs::write(out_dir.join("hmm_bmes.bin"), encode_asset(&bmes))?;
     let pos = convert_pos(&model_dir)?;
     fs::write(out_dir.join("hmm_pos.bin"), encode_asset(&pos))?;
+    let taxonomy_text = fs::read_to_string(affect_dir.join("emotion-taxonomy.json"))
+        .context("讀取 emotion-taxonomy.json")?;
+    let lexicon_text = fs::read_to_string(affect_dir.join("emotion-lexicon.json"))
+        .context("讀取 emotion-lexicon.json")?;
+    let taxonomy = parse_taxonomy(&taxonomy_text).map_err(anyhow::Error::msg)?;
+    let lexicon = parse_affect_lexicon(&lexicon_text).map_err(anyhow::Error::msg)?;
+    let affect = build_affect_model(taxonomy, lexicon).map_err(anyhow::Error::msg)?;
+    fs::write(out_dir.join("affect.bin"), encode_asset(&affect))?;
+    println!(
+        "[affect] taxonomy {}：{} 標籤、{} 詞、未知標籤 0",
+        affect.taxonomy.version,
+        affect.taxonomy.labels.len(),
+        affect.entries.len()
+    );
+    let label_families: BTreeMap<_, _> = affect
+        .taxonomy
+        .labels
+        .iter()
+        .map(|label| (label.id.as_str(), label.family.as_str()))
+        .collect();
+    let mut family_counts: BTreeMap<&str, usize> = BTreeMap::new();
+    for entry in &affect.entries {
+        let mut seen = BTreeSet::new();
+        for emotion in &entry.affect.emotions {
+            if let Some(family) = label_families.get(emotion.as_str()) {
+                seen.insert(*family);
+            }
+        }
+        for family in seen {
+            *family_counts.entry(family).or_default() += 1;
+        }
+    }
+    println!("[affect] 各家族詞數: {family_counts:?}");
     print_report(&dict, &bmes, &pos);
     Ok(())
 }

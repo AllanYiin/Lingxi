@@ -8,6 +8,7 @@ description = "繁體中文分詞引擎核心：全域二階 BMES 詞段 Viterbi
 [dependencies]
 daachorse = { workspace = true }
 serde = { workspace = true }
+serde_json = { workspace = true }
 postcard = { workspace = true }
 xxhash-rust = { workspace = true }
 regex = "1"

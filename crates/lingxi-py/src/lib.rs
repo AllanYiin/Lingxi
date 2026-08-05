@@ -35,6 +35,24 @@ impl Token {
     }
 }
 
+/// 帶詞性與可選情感的字元位置結果。
+#[pyclass(frozen, get_all)]
+struct AnnotatedToken {
+    word: String,
+    tag: String,
+    start: usize,
+    end: usize,
+    polarity: Option<String>,
+    emotions: Vec<String>,
+    context_dependent: bool,
+    semantic_flags: Vec<String>,
+    appraisals: Vec<String>,
+    source: Option<String>,
+    domain: Option<String>,
+    priority: Option<i8>,
+    affect_source: Option<String>,
+}
+
 /// 分詞器。執行緒安全，可在多執行緒間共享。
 #[pyclass(frozen)]
 struct Segmenter {
@@ -47,14 +65,28 @@ impl Segmenter {
     /// `user_dict` 為 jieba 格式詞條行（`詞 [頻率] [詞性]`）；檔案讀取由
     /// Python 層包裝（見 __init__.py 的 load()）。
     #[new]
-    #[pyo3(signature = (asset_dir, user_dict=None))]
-    fn new(asset_dir: &str, user_dict: Option<Vec<String>>) -> PyResult<Self> {
+    #[pyo3(signature = (asset_dir, user_dict=None, lexicons=None))]
+    fn new(
+        asset_dir: &str,
+        user_dict: Option<Vec<String>>,
+        lexicons: Option<Vec<String>>,
+    ) -> PyResult<Self> {
         let entries = user_dict
             .map(|lines| lingxi_core::parse_user_dict(&lines.join("\n")))
             .unwrap_or_default();
-        lingxi_core::Segmenter::from_asset_dir_with_user_dict(asset_dir, &entries)
-            .map(|inner| Segmenter { inner })
-            .map_err(|error| PyValueError::new_err(error.to_string()))
+        let custom_lexicons = lexicons
+            .unwrap_or_default()
+            .iter()
+            .map(|text| lingxi_core::parse_custom_lexicon(text))
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(PyValueError::new_err)?;
+        lingxi_core::Segmenter::from_asset_dir_with_user_dict_and_options(
+            asset_dir,
+            &entries,
+            lingxi_core::SegmenterOptions { custom_lexicons },
+        )
+        .map(|inner| Segmenter { inner })
+        .map_err(|error| PyValueError::new_err(error.to_string()))
     }
 
     /// TextRank 關鍵字抽取 → [(詞, 權重)]，權重降冪。
@@ -109,6 +141,11 @@ impl Segmenter {
         tokens_of(&self.inner, text)
     }
 
+    /// 分詞＋詞性＋詞級情感。
+    fn annotate(&self, text: &str) -> Vec<AnnotatedToken> {
+        annotated_tokens_of(&self.inner, text)
+    }
+
     /// 批次分詞：釋放 GIL 並以 rayon 平行，輸出順序與輸入一致。
     fn cut_batch(&self, py: Python<'_>, texts: Vec<String>) -> Vec<Vec<String>> {
         py.allow_threads(|| {
@@ -153,10 +190,69 @@ fn tokens_of(seg: &lingxi_core::Segmenter, text: &str) -> Vec<Token> {
     out
 }
 
+fn polarity_name(value: lingxi_core::Polarity) -> String {
+    match value {
+        lingxi_core::Polarity::Positive => "positive",
+        lingxi_core::Polarity::Negative => "negative",
+        lingxi_core::Polarity::Neutral => "neutral",
+        lingxi_core::Polarity::Mixed => "mixed",
+        lingxi_core::Polarity::Contextual => "contextual",
+    }
+    .into()
+}
+
+fn annotated_tokens_of(seg: &lingxi_core::Segmenter, text: &str) -> Vec<AnnotatedToken> {
+    let raw = seg.annotate(text);
+    let mut out = Vec::with_capacity(raw.len());
+    let mut cursor_byte = 0usize;
+    let mut cursor_char = 0usize;
+    for item in raw {
+        let token = item.token;
+        cursor_char += text[cursor_byte..token.byte_start].chars().count();
+        let word = &text[token.byte_start..token.byte_end];
+        let char_len = word.chars().count();
+        let (polarity, emotions, context_dependent, semantic_flags, appraisals, affect_source) =
+            match item.affect {
+                Some(affect) => (
+                    Some(polarity_name(affect.polarity)),
+                    affect.emotions,
+                    affect.context_dependent,
+                    affect.semantic_flags,
+                    affect.appraisals,
+                    affect.source,
+                ),
+                None => (None, Vec::new(), false, Vec::new(), Vec::new(), None),
+            };
+        let (source, domain, priority) = match item.source {
+            Some(source) => (Some(source.id), Some(source.domain), Some(source.priority)),
+            None => (None, None, None),
+        };
+        out.push(AnnotatedToken {
+            word: word.to_string(),
+            tag: seg.tag_name(token.tag).to_string(),
+            start: cursor_char,
+            end: cursor_char + char_len,
+            polarity,
+            emotions,
+            context_dependent,
+            semantic_flags,
+            appraisals,
+            source,
+            domain,
+            priority,
+            affect_source,
+        });
+        cursor_byte = token.byte_end;
+        cursor_char += char_len;
+    }
+    out
+}
+
 /// Python 模組進入點。
 #[pymodule]
 fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<Segmenter>()?;
     m.add_class::<Token>()?;
+    m.add_class::<AnnotatedToken>()?;
     Ok(())
 }

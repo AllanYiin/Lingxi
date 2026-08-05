@@ -354,6 +354,8 @@ version = "0.3.0"
 dependencies = [
  "anyhow",
  "lingxi-core",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
@@ -375,6 +377,7 @@ dependencies = [
  "postcard",
  "regex",
  "serde",
+ "serde_json",
  "xxhash-rust",
 ]
 
@@ -383,6 +386,7 @@ name = "lingxi-ffi"
 version = "0.3.0"
 dependencies = [
  "lingxi-core",
+ "serde_json",
 ]
 
 [[package]]

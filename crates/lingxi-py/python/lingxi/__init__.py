@@ -10,14 +10,15 @@
 """
 from __future__ import annotations
 
+import json
 import os
 from pathlib import Path
 
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 
-from ._core import Segmenter, Token
+from ._core import AnnotatedToken, Segmenter, Token
 
-__all__ = ["Segmenter", "Token", "load", "cut", "tokenize", "cut_batch", "extract_keywords"]
+__all__ = ["AnnotatedToken", "Segmenter", "Token", "load", "cut", "tokenize", "annotate", "cut_batch", "extract_keywords"]
 
 # wheel 內附模型目錄（maturin 將 python/lingxi/assets/ 打包進套件）。
 _BUNDLED_ASSETS = Path(__file__).parent / "assets"
@@ -26,6 +27,7 @@ _BUNDLED_ASSETS = Path(__file__).parent / "assets"
 def load(
     asset_dir: str | os.PathLike | None = None,
     user_dict: str | os.PathLike | Iterable[str] | None = None,
+    lexicons: Iterable[str | os.PathLike | Mapping] | None = None,
 ) -> Segmenter:
     """建立分詞器。
 
@@ -33,6 +35,9 @@ def load(
     user_dict 為自訂詞典：檔案路徑，或詞條行的可迭代物件。
     詞條格式：``詞 頻率 [詞性]``；詞必須至少兩字，頻率必須是有限正數。
     詞性省略時固定使用 CKIP ``Na``。
+    lexicons 可傳多個 schemaVersion 1 JSON 檔路徑或 Mapping；新格式不接受
+    frequency，也不改變主詞典 total／log_prob。缺少 affect.bin 時仍可建立，
+    annotate() 的 polarity 會為 None。
     """
     if asset_dir is None:
         asset_dir = os.environ.get("LINGXI_ASSETS") or _BUNDLED_ASSETS
@@ -42,9 +47,18 @@ def load(
             lines = Path(user_dict).read_text(encoding="utf-8").splitlines()
         else:
             lines = list(user_dict)
+    lexicon_json: list[str] | None = None
+    if lexicons is not None:
+        lexicon_json = []
+        for item in lexicons:
+            if isinstance(item, Mapping):
+                lexicon_json.append(json.dumps(dict(item), ensure_ascii=False))
+            else:
+                lexicon_json.append(Path(item).read_text(encoding="utf-8"))
     return Segmenter(
         str(asset_dir),
         lines,
+        lexicon_json,
     )
 
 
@@ -66,6 +80,11 @@ def cut(text: str) -> list[str]:
 def tokenize(text: str) -> list[Token]:
     """惰性單例版分詞＋詞性。"""
     return _default_segmenter().tokenize(text)
+
+
+def annotate(text: str) -> list[AnnotatedToken]:
+    """惰性單例版分詞＋詞性＋詞級情感。"""
+    return _default_segmenter().annotate(text)
 
 
 def cut_batch(texts: list[str]) -> list[list[str]]:

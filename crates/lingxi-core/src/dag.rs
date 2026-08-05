@@ -258,7 +258,13 @@ fn cut_viterbi_impl(
         .map(|character| model.chars.index_of(character))
         .collect();
 
-    let mut dictionary_edges: Vec<HashMap<usize, (f64, u32)>> =
+    #[derive(Clone, Copy)]
+    struct DictionaryEdge {
+        score: f64,
+        word_id: u32,
+        custom_bias: Option<f64>,
+    }
+    let mut dictionary_edges: Vec<HashMap<usize, DictionaryEdge>> =
         (0..n).map(|_| HashMap::new()).collect();
     for found in dict.matches(chunk) {
         let start = boundaries.binary_search(&found.byte_start).unwrap();
@@ -266,9 +272,17 @@ fn cut_viterbi_impl(
         if end - start < 2 {
             continue;
         }
-        let candidate = (dict.log_prob(found.word_id) as f64, found.word_id);
+        let candidate = DictionaryEdge {
+            score: found
+                .custom_bias
+                .unwrap_or_else(|| dict.log_prob(found.word_id) as f64),
+            word_id: found.word_id,
+            custom_bias: found.custom_bias,
+        };
         let slot = dictionary_edges[start].entry(end).or_insert(candidate);
-        if candidate.0 > slot.0 {
+        let candidate_rank = (candidate.custom_bias.is_some(), candidate.score);
+        let slot_rank = (slot.custom_bias.is_some(), slot.score);
+        if candidate_rank > slot_rank {
             *slot = candidate;
         }
     }
@@ -310,26 +324,29 @@ fn cut_viterbi_impl(
                 &[STATE_M, STATE_E]
             };
             for &(context, source) in &sources {
+                let bmes_score = || {
+                    if reference {
+                        #[cfg(test)]
+                        {
+                            bmes_token_score_reference(model, &rows, start, len, context)
+                        }
+                        #[cfg(not(test))]
+                        {
+                            unreachable!()
+                        }
+                    } else {
+                        bmes_token_score(model, &rows, start, len, context, &m_loop_prefix)
+                    }
+                };
                 let (token_score, word_id) = match dictionary {
-                    Some((log_prob, word_id)) => (
-                        boundary_score(model, context, STATE_B) + log_prob,
-                        Some(word_id),
-                    ),
-                    None => (
-                        if reference {
-                            #[cfg(test)]
-                            {
-                                bmes_token_score_reference(model, &rows, start, len, context)
-                            }
-                            #[cfg(not(test))]
-                            {
-                                unreachable!()
-                            }
-                        } else {
-                            bmes_token_score(model, &rows, start, len, context, &m_loop_prefix)
+                    Some(edge) => (
+                        match edge.custom_bias {
+                            Some(bias) => bmes_score() + bias,
+                            None => boundary_score(model, context, STATE_B) + edge.score,
                         },
-                        None,
+                        Some(edge.word_id),
                     ),
+                    None => (bmes_score(), None),
                 };
                 update_route(
                     &mut routes[end],

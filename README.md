@@ -13,7 +13,9 @@ LingXi 是以 Rust 重寫的繁體中文（台灣語料）分詞與詞性標註�
 - 單字完全由 BMES 決定；分詞詞典只含有限正頻率的多字詞
 - 固定詞界的全句二階 POS Viterbi；已知詞使用完整 `P(tag|word)`
 - URL、Email、英數、時間、百分比與數量級預切
-- runtime 自訂詞典（多字詞＋必填有限正頻率）
+- 相容舊 runtime 自訂詞典（多字詞＋有限正頻率）
+- 多份、可分領域、無詞頻的版本化自訂辭典；不改變主詞典總頻率
+- 獨立情感 taxonomy 與詞級多標籤 `annotate`（不做句級情緒推論）
 - TextRank 關鍵字抽取
 - CLI、Python、WASM/JavaScript、C ABI 四種介面
 
@@ -35,13 +37,14 @@ cargo clippy --workspace --all-targets --locked -- -D warnings
 
 ## Installation｜安裝與本機模型
 
-完整執行需要以下三個檔案：
+完整分詞需要三個模型檔，另可選擇載入詞級情感資產：
 
 ```text
 assets/
 ├── dict.bin
 ├── hmm_bmes.bin
-└── hmm_pos.bin
+├── hmm_pos.bin
+└── affect.bin       # 可選；缺少時 annotate 的 affect 為空
 ```
 
 這些檔案目前不在公開 repository 中。若你是內部維護者，請依 [ASSETS.md](ASSETS.md) 的規則準備本機資產；一般貢獻者不需要模型也能修改及測試純核心邏輯。
@@ -55,6 +58,11 @@ assets/
 ```bash
 cargo build --release -p lingxi-cli
 echo "市值縮水約1200億美元" | ./target/release/lingxi --format tsv
+
+# --lexicon 可重複；新格式沒有 frequency
+echo "搭板南線後感到欣慰" | ./target/release/lingxi \
+  --lexicon resources/examples/transit-tw.json \
+  --format annotated-json
 ```
 
 0.3.0 模型與各 binding 的 `tag` 欄位使用 CKIP 原生詞性代碼。POS 固定在分詞完成後執行，不參與詞界競爭；舊 POS rerank 參數已移除。
@@ -75,9 +83,20 @@ seg.cut("金管會前主委參加記者會")
 seg.tokenize("市值縮水約1200億美元")
 seg.cut_batch(["第一句", "第二句"])
 
+# 自訂辭典不含詞頻；lexicons 可同時載入多份 JSON 路徑或 dict。
 seg = lingxi.load(
-    user_dict=["板南線 100000 Nb", "柯文哲 100000 Nb", "鹽酥雞 100000 Na"]
+    lexicons=[
+        {
+            "schemaVersion": 1,
+            "id": "transit-tw",
+            "domain": "transportation",
+            "priority": 2,
+            "enabled": True,
+            "entries": [{"word": "板南線", "pos": "Nc"}],
+        }
+    ]
 )
+annotations = seg.annotate("搭板南線後感到欣慰")
 
 # TextRank 預設另以 Nb 建立專有名詞通道：
 # 依詞頻與首次出現位置提供軟加分，不保證入榜；可調整權重與占比上限。
@@ -107,18 +126,27 @@ C ABI 位於 `crates/lingxi-ffi`，公開標頭為 `crates/lingxi-ffi/include/li
 cargo build --release -p lingxi-ffi
 ```
 
+## 新資產與相容介面
+
+`resources/affect/emotion-taxonomy.json` 與 `emotion-lexicon.json` 是可人工審閱的來源；`lingxi-convert` 會把它們轉成可選的 `assets/affect.bin`。`Dict.json`、`dict.bin` 與詞頻批次不承擔情感資料。
+
+Rust 可用 `SegmenterOptions { custom_lexicons }` 搭配 `from_asset_dir_with_options`／`from_models_with_options`，再以 `annotate()` 取得詞界、POS、情感與自訂辭典來源。舊的 `from_asset_dir`、`from_asset_dir_with_user_dict`、`tokenize` 與 `Token` 保持不變。WASM 提供 `Segmenter.fromAssets(...)`，C ABI 提供 `lingxi_new_from_dir_v2`、`lingxi_annotate_json` 與 `lingxi_utf8_free`；舊 constructor／ABI 仍保留。
+
+格式、taxonomy、遷移與授權說明見 [resources/affect/README.md](resources/affect/README.md)。
+
 ## 演算法管線
 
 ```text
 文字
   → 正規化（ASCII 小寫 + 異體字）
   → 確定性保護（URL / Email / 英數 / 數量 / 年份 / 時間 / 標點）
-  → Han 塊建立所有 BMES 詞段與多字詞典命中索引
-  → 單一全域二階 Viterbi（詞典 log(freq/total) 只替代命中區段內部）
+  → Han 塊建立所有 BMES 詞段、主詞典與結構化自訂詞命中索引
+  → 單一全域二階 Viterbi（主詞典使用 log(freq/total)；自訂詞使用 BMES + 6.0 + priority×0.5）
   → 固定詞界的全句二階 POS Viterbi
      ├─ 已知詞：完整 P(tag|word)
      └─ OOV：字元 joint-state POS HMM
   → Token（原文區間 + 詞性）
+  → annotate 可選查詢獨立 affect 索引與自訂辭典來源
 ```
 
 ## Repository 結構

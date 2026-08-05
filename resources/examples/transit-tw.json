@@ -1,0 +1,13 @@
+{
+  "schemaVersion": 1,
+  "id": "transit-tw",
+  "domain": "transportation",
+  "priority": 2,
+  "enabled": true,
+  "entries": [
+    {
+      "word": "板南線",
+      "pos": "Nc"
+    }
+  ]
+}

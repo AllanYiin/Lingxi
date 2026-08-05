@@ -1,7 +1,7 @@
 //! lingxi CLI：逐行讀 stdin 或檔案，輸出分詞結果。
 //!
 //! 用法：
-//!   lingxi [--assets DIR] [--user-dict FILE] [--format words|tsv|jsonl]
+//!   lingxi [--assets DIR] [--user-dict FILE] [--lexicon FILE]... [--format words|tsv|jsonl|annotated-json]
 //!          [--sep 分隔符] [--keywords N] [FILE...]
 //!
 //! - words（預設）：一行輸入一行輸出，詞以 --sep（預設 "/"）連接，空白詞段略過
@@ -12,21 +12,25 @@
 //!
 //! 資產目錄搜尋順序：--assets → 環境變數 LINGXI_ASSETS → ./assets。
 
+use std::collections::{BTreeSet, HashMap};
 use std::io::{BufRead, BufWriter, Read, Write};
 use std::time::Instant;
 
 use anyhow::{bail, Context, Result};
 use lingxi_core::Segmenter;
+use serde::Serialize;
 
 enum Format {
     Words,
     Tsv,
     Jsonl,
+    AnnotatedJson,
 }
 
 struct Args {
     assets: String,
     user_dict: Option<String>,
+    lexicons: Vec<String>,
     format: Format,
     sep: String,
     files: Vec<String>,
@@ -39,6 +43,7 @@ fn parse_args() -> Result<Args> {
     let mut args = Args {
         assets: std::env::var("LINGXI_ASSETS").unwrap_or_else(|_| "assets".into()),
         user_dict: None,
+        lexicons: Vec::new(),
         format: Format::Words,
         sep: "/".into(),
         files: Vec::new(),
@@ -50,13 +55,15 @@ fn parse_args() -> Result<Args> {
         match a.as_str() {
             "--assets" => args.assets = it.next().context("--assets 需要參數")?,
             "--user-dict" => args.user_dict = Some(it.next().context("--user-dict 需要參數")?),
+            "--lexicon" => args.lexicons.push(it.next().context("--lexicon 需要參數")?),
             "--sep" => args.sep = it.next().context("--sep 需要參數")?,
             "--format" => {
                 args.format = match it.next().context("--format 需要參數")?.as_str() {
                     "words" => Format::Words,
                     "tsv" => Format::Tsv,
                     "jsonl" => Format::Jsonl,
-                    other => bail!("未知格式 {other}（可用 words|tsv|jsonl）"),
+                    "annotated-json" => Format::AnnotatedJson,
+                    other => bail!("未知格式 {other}（可用 words|tsv|jsonl|annotated-json）"),
                 }
             }
             "--keywords" => {
@@ -69,7 +76,7 @@ fn parse_args() -> Result<Args> {
             }
             "--stats" => args.stats = true,
             "--help" | "-h" => {
-                eprintln!("用法: lingxi [--assets DIR] [--user-dict FILE] [--format words|tsv|jsonl] [--sep S] [--keywords N] [--stats] [FILE...]");
+                eprintln!("用法: lingxi [--assets DIR] [--user-dict FILE] [--lexicon FILE]... [--format words|tsv|jsonl|annotated-json] [--sep S] [--keywords N] [--stats] [FILE...]");
                 std::process::exit(0);
             }
             _ => args.files.push(a),
@@ -90,14 +97,29 @@ fn main() -> Result<()> {
         }
         None => Vec::new(),
     };
-    let seg = Segmenter::from_asset_dir_with_user_dict(&args.assets, &user_entries).with_context(
-        || {
-            format!(
-                "載入資產目錄 {} 失敗（可用 --assets 或 LINGXI_ASSETS 指定）",
-                args.assets
-            )
+    let lexicons = args
+        .lexicons
+        .iter()
+        .map(|path| {
+            let text = std::fs::read_to_string(path)
+                .with_context(|| format!("讀取多領域自訂辭典 {path}"))?;
+            lingxi_core::parse_custom_lexicon(&text).map_err(anyhow::Error::msg)
+        })
+        .collect::<Result<Vec<_>>>()?;
+    let lexicon_report = summarize_lexicons(&lexicons);
+    let seg = Segmenter::from_asset_dir_with_user_dict_and_options(
+        &args.assets,
+        &user_entries,
+        lingxi_core::SegmenterOptions {
+            custom_lexicons: lexicons,
         },
-    )?;
+    )
+    .with_context(|| {
+        format!(
+            "載入資產目錄 {} 失敗（可用 --assets 或 LINGXI_ASSETS 指定）",
+            args.assets
+        )
+    })?;
     let load_ms = t0.elapsed().as_millis();
 
     let stdout = std::io::stdout();
@@ -121,6 +143,7 @@ fn main() -> Result<()> {
         }
         out.flush()?;
         if args.stats {
+            print_resource_stats(&seg, &lexicon_report);
             eprintln!("載入 {load_ms} ms; 抽取 {:.2} MB", text.len() as f64 / 1e6);
         }
         return Ok(());
@@ -149,6 +172,7 @@ fn main() -> Result<()> {
     out.flush()?;
 
     if args.stats {
+        print_resource_stats(&seg, &lexicon_report);
         let secs = t1.elapsed().as_secs_f64();
         eprintln!(
             "載入 {load_ms} ms; 處理 {:.2} MB / {:.3} s = {:.2} MB/s",
@@ -158,6 +182,60 @@ fn main() -> Result<()> {
         );
     }
     Ok(())
+}
+
+fn print_resource_stats(seg: &Segmenter, lexicon_report: &str) {
+    eprintln!("{lexicon_report}");
+    let affect = seg.affect_stats();
+    eprintln!(
+        "情感詞 {}；各家族 {:?}；未知標籤 {}",
+        affect.word_count, affect.family_counts, affect.unknown_label_count
+    );
+}
+
+fn summarize_lexicons(specs: &[lingxi_core::CustomLexiconSpec]) -> String {
+    let enabled: Vec<_> = specs.iter().filter(|spec| spec.enabled).collect();
+    let domains: BTreeSet<_> = enabled.iter().map(|spec| spec.domain.as_str()).collect();
+    let mut winners: HashMap<String, i8> = HashMap::new();
+    let mut conflicts = 0usize;
+    let mut overrides = 0usize;
+    for spec in &enabled {
+        for entry in &spec.entries {
+            let normalized: String = entry
+                .word
+                .chars()
+                .map(|character| {
+                    let character = character.to_ascii_lowercase();
+                    if character == '臺' {
+                        '台'
+                    } else {
+                        character
+                    }
+                })
+                .collect();
+            match winners.get(&normalized).copied() {
+                Some(priority) => {
+                    conflicts += 1;
+                    if spec.priority >= priority {
+                        winners.insert(normalized, spec.priority);
+                        overrides += 1;
+                    }
+                }
+                None => {
+                    winners.insert(normalized, spec.priority);
+                }
+            }
+        }
+    }
+    format!(
+        "結構化辭典 {} 份（啟用 {}）；領域 {:?}；衝突 {}；覆寫 {}；有效詞 {}",
+        specs.len(),
+        enabled.len(),
+        domains,
+        conflicts,
+        overrides,
+        winners.len()
+    )
 }
 
 fn write_line(seg: &Segmenter, line: &str, args: &Args, out: &mut impl Write) -> Result<()> {
@@ -207,6 +285,37 @@ fn write_line(seg: &Segmenter, line: &str, args: &Args, out: &mut impl Write) ->
                 first = false;
             }
             out.write_all(b"]}\n")?;
+        }
+        Format::AnnotatedJson => {
+            #[derive(Serialize)]
+            struct OutputToken<'a> {
+                w: &'a str,
+                t: &'a str,
+                s: usize,
+                e: usize,
+                #[serde(skip_serializing_if = "Option::is_none")]
+                affect: Option<lingxi_core::AffectAnnotation>,
+                #[serde(skip_serializing_if = "Option::is_none")]
+                source: Option<lingxi_core::LexiconSource>,
+            }
+            #[derive(Serialize)]
+            struct OutputLine<'a> {
+                tokens: Vec<OutputToken<'a>>,
+            }
+            let tokens = seg
+                .annotate(line)
+                .into_iter()
+                .map(|item| OutputToken {
+                    w: &line[item.token.byte_start..item.token.byte_end],
+                    t: seg.tag_name(item.token.tag),
+                    s: item.token.byte_start,
+                    e: item.token.byte_end,
+                    affect: item.affect,
+                    source: item.source,
+                })
+                .collect();
+            serde_json::to_writer(&mut *out, &OutputLine { tokens })?;
+            out.write_all(b"\n")?;
         }
     }
     Ok(())

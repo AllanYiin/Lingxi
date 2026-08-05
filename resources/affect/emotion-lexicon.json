@@ -1,0 +1,80 @@
+{
+  "schemaVersion": 1,
+  "taxonomyVersion": "1.0.0",
+  "entries": [
+    {
+      "word": "開心",
+      "emotions": [
+        "joy.joy"
+      ],
+      "source": "lingxi-manual-v1"
+    },
+    {
+      "word": "欣慰",
+      "emotions": [
+        "joy.joy",
+        "joy.relief"
+      ],
+      "source": "lingxi-manual-v1"
+    },
+    {
+      "word": "感激",
+      "emotions": [
+        "affection.gratitude"
+      ],
+      "source": "lingxi-manual-v1"
+    },
+    {
+      "word": "自信",
+      "emotions": [
+        "outlook.confidence"
+      ],
+      "source": "lingxi-manual-v1"
+    },
+    {
+      "word": "想念",
+      "emotions": [
+        "affection.love",
+        "sadness.sadness"
+      ],
+      "contextDependent": true,
+      "source": "lingxi-manual-v1"
+    },
+    {
+      "word": "驚訝",
+      "emotions": [
+        "surprise.surprise"
+      ],
+      "contextDependent": true,
+      "source": "lingxi-manual-v1"
+    },
+    {
+      "word": "難過",
+      "emotions": [
+        "sadness.sadness"
+      ],
+      "source": "lingxi-manual-v1"
+    },
+    {
+      "word": "擔憂",
+      "emotions": [
+        "fear.worry"
+      ],
+      "source": "lingxi-manual-v1"
+    },
+    {
+      "word": "憤怒",
+      "emotions": [
+        "anger.anger"
+      ],
+      "source": "lingxi-manual-v1"
+    },
+    {
+      "word": "無奈",
+      "emotions": [
+        "powerlessness.helplessness"
+      ],
+      "source": "lingxi-manual-v1"
+    }
+  ]
+}
