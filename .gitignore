@@ -11,6 +11,9 @@
 /dist/
 /crates/*.zip
 /apps/dict-editor.zip
+/apps/summary-lab/.runtime/
+/apps/summary-lab/logs/
+/apps/summary-lab/release/
 *.whl
 
 # Python

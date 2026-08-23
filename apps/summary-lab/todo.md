@@ -1,0 +1,19 @@
+# Summary Lab 一鍵交付 TODO
+
+- [x] 整理使用情境、APSM 與一鍵啟動需求
+- [x] 建立 `project.config.json`、`specs/requirements.md` 與 app-local `AGENTS.md`
+- [x] 導入 skill 的 `project_launcher.py` 與 `apsm_validate.py`
+- [x] 加入 Windows/macOS/Linux launcher generation
+- [x] 加入 Python／Node／Cargo 前置檢查、readiness probe 與 logs
+- [x] 產生 launchers 與 runtime metadata
+- [x] 執行 APSM strict validation
+- [x] 實際執行 Windows 一鍵啟動與摘要 smoke test
+- [x] 記錄可恢復方式與打包限制：模型 assets 目前標示不可再散布，暫不產出可能缺少模型的誤導性 standalone ZIP
+- [x] 將條列、日期與數字設為硬保留訊號
+- [x] 加入密集 Markdown 筆記完整保留模式
+- [x] 修正 `不只`／`不僅` 否定誤判與條件前件截斷
+- [x] 同步報告欄位、診斷色標與跨語言 bindings
+- [x] 以 Markdown 與久坐腎臟案例完成 Rust／Node／CLI 回歸驗證
+- [x] 新增全大寫縮略語與括號內定義偵測
+- [x] 同步縮略語報告欄位、bindings 與 UI 色標
+- [x] 以 `Fear Of Missing Out（FOMO）` 完成核心、CLI 與畫面驗證

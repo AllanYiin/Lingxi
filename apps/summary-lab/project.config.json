@@ -1,0 +1,16 @@
+{
+  "name": "lingxi-summary-lab",
+  "usage_scene": "scene_b_shared_tool",
+  "project_profile": {
+    "user_type": "small_team",
+    "usage_duration": "occasional",
+    "change_frequency": "occasional",
+    "failure_cost": "multi_user_disruption"
+  },
+  "apsm_version": "1.0",
+  "archetype": "fullstack_app",
+  "architecture": "single_service",
+  "frontend": "node_ssr",
+  "backend": "node_api",
+  "version": "0.2.0"
+}

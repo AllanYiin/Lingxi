@@ -1,0 +1,9 @@
+{
+  "name": "lingxi-summary-lab-web-contract",
+  "private": true,
+  "version": "0.2.0",
+  "scripts": {
+    "dev": "node ../../server.mjs --port 4174",
+    "start": "node ../../server.mjs --port 4174"
+  }
+}

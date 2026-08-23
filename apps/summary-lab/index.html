@@ -1,0 +1,164 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="LingXi 完全不使用 LLM 的抽取式摘要測試工作台">
+  <title>LingXi Summary Lab</title>
+  <link rel="icon" href="favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <a class="skip-link" href="#workspace">跳至摘要工作區</a>
+  <header class="app-header">
+    <div class="brand-lockup" aria-label="LingXi Summary Lab">
+      <span class="brand-mark" aria-hidden="true">靈</span>
+      <span><strong>LingXi</strong><small>Summary Lab</small></span>
+    </div>
+    <div class="trust-status" aria-label="執行環境">
+      <span class="status-dot" aria-hidden="true"></span>
+      本機 deterministic · 0 LLM calls
+    </div>
+  </header>
+
+  <main id="workspace" class="workspace">
+    <section class="input-stage" data-primary-task aria-labelledby="input-title">
+      <div class="stage-heading">
+        <div>
+          <p class="eyebrow">原文校樣台</p>
+          <h1 id="input-title">貼入內容，檢查摘要怎麼被選出來</h1>
+        </div>
+        <p class="stage-note">只抽取原文子句，不生成、不改寫，也不將內容送出本機。</p>
+      </div>
+
+      <form id="summary-form" class="summary-form">
+        <label for="source-text">測試內容</label>
+        <textarea id="source-text" name="text" rows="12" maxlength="600000" placeholder="在這裡貼上要測試的文章、規格或條列內容……" required></textarea>
+        <div class="input-meta">
+          <span id="character-count">0 字元</span>
+          <span>tokenizer：o200k_base</span>
+          <span>資料流向：localhost only</span>
+        </div>
+
+        <div class="action-row">
+          <div class="secondary-actions">
+            <button id="sample-button" class="button button--quiet" type="button">填入範例</button>
+            <details class="settings-disclosure">
+              <summary>進階設定</summary>
+              <div class="settings-grid">
+                <label>一般候選軟上限
+                  <input id="max-clauses" type="number" min="1" max="100" value="12">
+                </label>
+                <label>最低可解釋性
+                  <input id="min-explainability" type="number" min="0" max="1" step="0.05" value="0.35">
+                </label>
+              </div>
+            </details>
+          </div>
+          <button id="run-button" class="button button--primary" type="submit" disabled>
+            <span class="button-label">執行</span>
+            <span class="button-progress" aria-hidden="true"></span>
+          </button>
+        </div>
+      </form>
+
+      <div id="run-status" class="run-status" role="status" aria-live="polite">等待輸入內容。</div>
+      <div id="error-message" class="error-message" role="alert" hidden></div>
+    </section>
+
+    <section id="results" class="results-stage" aria-labelledby="results-title" hidden>
+      <div class="results-heading">
+        <div>
+          <p class="eyebrow">計算完成</p>
+          <h2 id="results-title">摘要測試報告</h2>
+        </div>
+        <span id="engine-stamp" class="engine-stamp">lingxi-core / 0 LLM</span>
+      </div>
+
+      <div class="tabs" role="tablist" aria-label="摘要測試報告分頁">
+        <button id="tab-summary" role="tab" aria-selected="true" aria-controls="panel-summary" tabindex="0">摘要結果</button>
+        <button id="tab-diagnostics" role="tab" aria-selected="false" aria-controls="panel-diagnostics" tabindex="-1">句子診斷</button>
+      </div>
+
+      <section id="panel-summary" role="tabpanel" aria-labelledby="tab-summary">
+        <dl class="metric-strip" aria-label="摘要計算指標">
+          <div><dt>Before</dt><dd><strong id="input-tokens">—</strong><span>tokens</span></dd></div>
+          <div><dt>After</dt><dd><strong id="output-tokens">—</strong><span>tokens</span></dd></div>
+          <div><dt>縮減</dt><dd><strong id="reduction-percent">—</strong><span>估算</span></dd></div>
+          <div><dt>計算耗時</dt><dd><strong id="elapsed-time">—</strong><span>core + tokenizer</span></dd></div>
+        </dl>
+
+        <div class="token-ruler" aria-label="摘要前後 token 比例">
+          <span class="token-ruler__before"></span>
+          <span id="token-ruler-after" class="token-ruler__after"></span>
+        </div>
+
+        <div class="comparison-stage">
+          <article class="proof-sheet proof-sheet--before" aria-labelledby="before-title">
+            <header><span>BEFORE</span><h3 id="before-title">原文</h3></header>
+            <div id="before-text" class="proof-copy"></div>
+          </article>
+          <article class="proof-sheet proof-sheet--after" aria-labelledby="after-title">
+            <header><span>AFTER</span><h3 id="after-title">最佳摘要</h3></header>
+            <div id="after-text" class="proof-copy proof-copy--summary"></div>
+          </article>
+        </div>
+      </section>
+
+      <section id="panel-diagnostics" role="tabpanel" aria-labelledby="tab-diagnostics" hidden>
+        <div class="diagnostic-intro">
+          <p><strong id="clause-count">0</strong> 個子句，<strong id="selected-count">0</strong> 個納入摘要。顏色與文字標籤表示規則加權來源。</p>
+          <div class="signal-legend" aria-label="特殊加權圖例">
+            <span class="signal-tag signal--proper">專有名詞</span>
+            <span class="signal-tag signal--negation">否定</span>
+            <span class="signal-tag signal--emphasis">強調</span>
+            <span class="signal-tag signal--list">條列</span>
+            <span class="signal-tag signal--object">物件名</span>
+            <span class="signal-tag signal--date">日期</span>
+            <span class="signal-tag signal--number">數字</span>
+            <span class="signal-tag signal--quantity">數值＋單位</span>
+            <span class="signal-tag signal--acronym">縮略語</span>
+          </div>
+        </div>
+
+        <figure class="curve-figure">
+          <figcaption>
+            <strong>解釋性累積曲線</strong>
+            <span>依單句 explainability 由高至低排列；曲線越早趨平，代表後續子句的解釋貢獻越低。</span>
+          </figcaption>
+          <svg id="curve-chart" viewBox="0 0 720 220" role="img" aria-labelledby="curve-title curve-description">
+            <title id="curve-title">解釋性累積曲線</title>
+            <desc id="curve-description">尚未產生資料</desc>
+            <line class="chart-grid" x1="28" y1="28" x2="28" y2="192"></line>
+            <line class="chart-grid" x1="28" y1="192" x2="692" y2="192"></line>
+            <line class="chart-guide" x1="28" y1="110" x2="692" y2="110"></line>
+            <text class="chart-label" x="5" y="34">100%</text>
+            <text class="chart-label" x="10" y="116">50%</text>
+            <text class="chart-label" x="14" y="198">0%</text>
+            <path id="curve-area" class="curve-area" d=""></path>
+            <path id="curve-line" class="curve-line" d=""></path>
+            <g id="curve-points"></g>
+          </svg>
+        </figure>
+
+        <div class="clause-table" role="table" aria-label="逐句重要性與可解釋性">
+          <div class="clause-row clause-row--header" role="row">
+            <span role="columnheader">句</span>
+            <span role="columnheader">原文子句與加權理由</span>
+            <span role="columnheader">重要性</span>
+            <span role="columnheader">解釋性</span>
+            <span role="columnheader">結果</span>
+          </div>
+          <div id="clause-list" role="rowgroup"></div>
+        </div>
+      </section>
+    </section>
+  </main>
+
+  <footer class="app-footer">
+    <span>LingXi Summary Lab</span>
+    <span>Deterministic extraction · tiktoken estimate · localhost only</span>
+  </footer>
+  <script type="module" src="app.js"></script>
+</body>
+</html>
