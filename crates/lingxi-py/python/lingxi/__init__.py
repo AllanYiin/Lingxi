@@ -16,9 +16,13 @@ from pathlib import Path
 
 from collections.abc import Iterable, Mapping
 
-from ._core import AnnotatedToken, Segmenter, Token
+from ._core import AnnotatedToken, Clause, Keyphrase, Segmenter, Sentence, SummarySentence, Token
 
-__all__ = ["AnnotatedToken", "Segmenter", "Token", "load", "cut", "tokenize", "annotate", "cut_batch", "extract_keywords"]
+__all__ = [
+    "AnnotatedToken", "Clause", "Keyphrase", "Segmenter", "Sentence", "SummarySentence", "Token",
+    "load", "cut", "tokenize", "annotate", "cut_batch", "extract_keywords",
+    "split_sentences", "split_clauses", "extract_summary", "extract_keyphrases",
+]
 
 # wheel 內附模型目錄（maturin 將 python/lingxi/assets/ 打包進套件）。
 _BUNDLED_ASSETS = Path(__file__).parent / "assets"
@@ -93,7 +97,30 @@ def cut_batch(texts: list[str]) -> list[list[str]]:
 
 
 def extract_keywords(
-    text: str, top_k: int = 20, allow_tags: list[str] | None = None
+    text: str,
+    top_k: int = 20,
+    allow_tags: list[str] | None = None,
+    **options,
 ) -> list[tuple[str, float]]:
     """惰性單例版 TextRank 關鍵字抽取 → [(詞, 權重)]，權重降冪。"""
-    return _default_segmenter().extract_keywords(text, top_k, allow_tags)
+    return _default_segmenter().extract_keywords(text, top_k, allow_tags, **options)
+
+
+def split_sentences(text: str, semicolon_boundary: bool = False) -> list[Sentence]:
+    """惰性單例版中文斷句；start/end 為 Python 字元座標。"""
+    return _default_segmenter().split_sentences(text, semicolon_boundary)
+
+
+def split_clauses(text: str, **options) -> list[Clause]:
+    """惰性單例版結構感知子句抽取；start/end 為 Python 字元座標。"""
+    return _default_segmenter().split_clauses(text, **options)
+
+
+def extract_summary(text: str, top_k: int = 3, **options) -> list[SummarySentence]:
+    """惰性單例版 TextRank 抽取式摘要。"""
+    return _default_segmenter().extract_summary(text, top_k, **options)
+
+
+def extract_keyphrases(text: str, top_k: int = 10, **options) -> list[Keyphrase]:
+    """惰性單例版相鄰關鍵短語抽取。"""
+    return _default_segmenter().extract_keyphrases(text, top_k, **options)

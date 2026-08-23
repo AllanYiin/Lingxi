@@ -37,6 +37,20 @@ struct Args {
     stats: bool,
     /// Some(n) = 關鍵字模式：全部輸入做 TextRank，取前 n 個。
     keywords: Option<usize>,
+    /// Some(n) = 抽取式摘要模式。
+    summary: Option<usize>,
+    /// Some(n) = 摘要測試報告模式：單一 JSON，含全部子句診斷與 token 比較。
+    summary_report: Option<usize>,
+    /// Some(n) = 關鍵短語模式。
+    keyphrases: Option<usize>,
+    /// 中文斷句 JSONL 模式。
+    sentences: bool,
+    /// 結構感知子句 JSONL 模式。
+    clauses: bool,
+    /// 一般摘要候選的最低可解釋性；硬保留事實可略過門檻與 `top_k` 軟上限。
+    min_explainability: Option<f32>,
+    /// 可選停用詞檔，每行一詞。
+    stopwords: Option<String>,
 }
 
 fn parse_args() -> Result<Args> {
@@ -49,6 +63,13 @@ fn parse_args() -> Result<Args> {
         files: Vec::new(),
         stats: false,
         keywords: None,
+        summary: None,
+        summary_report: None,
+        keyphrases: None,
+        sentences: false,
+        clauses: false,
+        min_explainability: None,
+        stopwords: None,
     };
     let mut it = std::env::args().skip(1);
     while let Some(a) = it.next() {
@@ -74,13 +95,63 @@ fn parse_args() -> Result<Args> {
                         .context("--keywords 需為整數")?,
                 )
             }
+            "--summary" => {
+                args.summary = Some(
+                    it.next()
+                        .context("--summary 需要參數")?
+                        .parse()
+                        .context("--summary 需為整數")?,
+                )
+            }
+            "--summary-report" => {
+                args.summary_report = Some(
+                    it.next()
+                        .context("--summary-report 需要參數")?
+                        .parse()
+                        .context("--summary-report 需為整數")?,
+                )
+            }
+            "--keyphrases" => {
+                args.keyphrases = Some(
+                    it.next()
+                        .context("--keyphrases 需要參數")?
+                        .parse()
+                        .context("--keyphrases 需為整數")?,
+                )
+            }
+            "--sentences" => args.sentences = true,
+            "--clauses" => args.clauses = true,
+            "--min-explainability" => {
+                args.min_explainability = Some(
+                    it.next()
+                        .context("--min-explainability 需要參數")?
+                        .parse()
+                        .context("--min-explainability 需為 0 到 1 的數值")?,
+                )
+            }
+            "--stopwords" => args.stopwords = Some(it.next().context("--stopwords 需要參數")?),
             "--stats" => args.stats = true,
             "--help" | "-h" => {
-                eprintln!("用法: lingxi [--assets DIR] [--user-dict FILE] [--lexicon FILE]... [--format words|tsv|jsonl|annotated-json] [--sep S] [--keywords N] [--stats] [FILE...]");
+                eprintln!("用法: lingxi [--assets DIR] [--user-dict FILE] [--lexicon FILE]... [--format words|tsv|jsonl|annotated-json] [--sep S] [--keywords N | --summary MAX_N | --summary-report MAX_N | --keyphrases N | --sentences | --clauses] [--min-explainability 0..1] [--stopwords FILE] [--stats] [FILE...]");
                 std::process::exit(0);
             }
             _ => args.files.push(a),
         }
+    }
+    let analysis_modes = usize::from(args.keywords.is_some())
+        + usize::from(args.summary.is_some())
+        + usize::from(args.summary_report.is_some())
+        + usize::from(args.keyphrases.is_some())
+        + usize::from(args.sentences)
+        + usize::from(args.clauses);
+    if analysis_modes > 1 {
+        bail!("--keywords、--summary、--summary-report、--keyphrases、--sentences、--clauses 只能擇一");
+    }
+    if args
+        .min_explainability
+        .is_some_and(|value| !value.is_finite() || !(0.0..=1.0).contains(&value))
+    {
+        bail!("--min-explainability 必須介於 0 到 1");
     }
     Ok(args)
 }
@@ -125,26 +196,136 @@ fn main() -> Result<()> {
     let stdout = std::io::stdout();
     let mut out = BufWriter::new(stdout.lock());
 
-    // 關鍵字模式：整份輸入一次抽取，與逐行分詞管線互斥。
-    if let Some(top_k) = args.keywords {
-        let mut text = String::new();
-        if args.files.is_empty() {
-            std::io::stdin().lock().read_to_string(&mut text)?;
-        } else {
-            for path in &args.files {
-                text.push_str(
-                    &std::fs::read_to_string(path).with_context(|| format!("讀取 {path}"))?,
-                );
-                text.push('\n');
+    // 文件分析模式：整份輸入一次處理，與逐行分詞管線互斥。
+    if args.keywords.is_some()
+        || args.summary.is_some()
+        || args.summary_report.is_some()
+        || args.keyphrases.is_some()
+        || args.sentences
+        || args.clauses
+    {
+        let text = read_all_text(&args.files)?;
+        let stopwords = read_stopwords(args.stopwords.as_deref())?;
+        if let Some(top_k) = args.keywords {
+            for keyword in seg.extract_keywords_configured(
+                &text,
+                top_k,
+                None,
+                &lingxi_core::KeywordExtractionOptions {
+                    stopwords,
+                    ..lingxi_core::KeywordExtractionOptions::default()
+                },
+            ) {
+                writeln!(out, "{}\t{:.4}", keyword.word, keyword.weight)?;
             }
-        }
-        for k in seg.extract_keywords(&text, top_k) {
-            writeln!(out, "{}\t{:.4}", k.word, k.weight)?;
+        } else if let Some(top_k) = args.summary_report {
+            write_summary_report(
+                &mut out,
+                &seg,
+                &text,
+                top_k,
+                stopwords,
+                args.min_explainability,
+            )?;
+        } else if let Some(top_k) = args.summary {
+            for sentence in seg.extract_summary_with_options(
+                &text,
+                top_k,
+                &lingxi_core::SummaryOptions {
+                    stopwords,
+                    min_explainability: args
+                        .min_explainability
+                        .or(lingxi_core::SummaryOptions::default().min_explainability),
+                    ..lingxi_core::SummaryOptions::default()
+                },
+            ) {
+                serde_json::to_writer(
+                    &mut out,
+                    &serde_json::json!({
+                        "text": sentence.text,
+                        "byteStart": sentence.byte_start,
+                        "byteEnd": sentence.byte_end,
+                        "index": sentence.sentence_index,
+                        "clauseIndex": sentence.clause_index,
+                        "weight": sentence.weight,
+                        "explainability": sentence.explainability,
+                        "novelty": sentence.novelty,
+                        "coverageGain": sentence.coverage_gain,
+                        "signals": {
+                            "properNounCount": sentence.signals.proper_noun_count,
+                            "negationCount": sentence.signals.negation_count,
+                            "emphasisCount": sentence.signals.emphasis_count,
+                            "listItem": sentence.signals.list_item,
+                            "objectNameCount": sentence.signals.object_name_count,
+                            "dateCount": sentence.signals.date_count,
+                            "numberCount": sentence.signals.number_count,
+                            "quantityCount": sentence.signals.quantity_count,
+                            "acronymCount": sentence.signals.acronym_count,
+                        },
+                    }),
+                )?;
+                out.write_all(b"\n")?;
+            }
+        } else if let Some(top_k) = args.keyphrases {
+            for phrase in seg.extract_keyphrases_with_options(
+                &text,
+                &lingxi_core::KeyphraseOptions {
+                    top_k,
+                    keyword_count: top_k.saturating_mul(4).max(20),
+                    keywords: lingxi_core::KeywordExtractionOptions {
+                        stopwords,
+                        ..lingxi_core::KeywordExtractionOptions::default()
+                    },
+                    ..lingxi_core::KeyphraseOptions::default()
+                },
+            ) {
+                serde_json::to_writer(
+                    &mut out,
+                    &serde_json::json!({
+                        "phrase": phrase.phrase,
+                        "weight": phrase.weight,
+                        "occurrences": phrase.occurrences,
+                        "spans": phrase.spans.iter().map(|span| serde_json::json!({
+                            "byteStart": span.byte_start,
+                            "byteEnd": span.byte_end,
+                        })).collect::<Vec<_>>(),
+                    }),
+                )?;
+                out.write_all(b"\n")?;
+            }
+        } else if args.sentences {
+            for sentence in seg.split_sentences(&text) {
+                serde_json::to_writer(
+                    &mut out,
+                    &serde_json::json!({
+                        "text": sentence.text,
+                        "byteStart": sentence.byte_start,
+                        "byteEnd": sentence.byte_end,
+                        "index": sentence.sentence_index,
+                    }),
+                )?;
+                out.write_all(b"\n")?;
+            }
+        } else {
+            for clause in seg.split_clauses(&text) {
+                serde_json::to_writer(
+                    &mut out,
+                    &serde_json::json!({
+                        "text": clause.text,
+                        "byteStart": clause.byte_start,
+                        "byteEnd": clause.byte_end,
+                        "sentenceIndex": clause.sentence_index,
+                        "clauseIndex": clause.clause_index,
+                        "listItem": clause.list_item,
+                    }),
+                )?;
+                out.write_all(b"\n")?;
+            }
         }
         out.flush()?;
         if args.stats {
             print_resource_stats(&seg, &lexicon_report);
-            eprintln!("載入 {load_ms} ms; 抽取 {:.2} MB", text.len() as f64 / 1e6);
+            eprintln!("載入 {load_ms} ms; 分析 {:.2} MB", text.len() as f64 / 1e6);
         }
         return Ok(());
     }
@@ -181,6 +362,168 @@ fn main() -> Result<()> {
             total_bytes as f64 / 1e6 / secs.max(1e-9),
         );
     }
+    Ok(())
+}
+
+fn read_all_text(files: &[String]) -> Result<String> {
+    let mut text = String::new();
+    if files.is_empty() {
+        std::io::stdin().lock().read_to_string(&mut text)?;
+    } else {
+        for path in files {
+            text.push_str(&std::fs::read_to_string(path).with_context(|| format!("讀取 {path}"))?);
+            text.push('\n');
+        }
+    }
+    Ok(text)
+}
+
+fn read_stopwords(path: Option<&str>) -> Result<Vec<String>> {
+    let Some(path) = path else {
+        return Ok(Vec::new());
+    };
+    let text = std::fs::read_to_string(path).with_context(|| format!("讀取停用詞 {path}"))?;
+    Ok(text
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty() && !line.starts_with('#'))
+        .map(str::to_string)
+        .collect())
+}
+
+fn write_summary_report(
+    out: &mut impl Write,
+    seg: &Segmenter,
+    text: &str,
+    top_k: usize,
+    stopwords: Vec<String>,
+    min_explainability: Option<f32>,
+) -> Result<()> {
+    use std::collections::{HashMap, HashSet};
+
+    let started = Instant::now();
+    let tokenizer = tiktoken_rs::o200k_base_singleton();
+    let input_tokens = tokenizer.encode_with_special_tokens(text).len();
+    let defaults = lingxi_core::SummaryOptions::default();
+    let threshold = min_explainability.or(defaults.min_explainability);
+    let preserve_structured_markdown = lingxi_core::should_preserve_structured_markdown(text);
+    let summary = seg.extract_summary_with_options(
+        text,
+        top_k,
+        &lingxi_core::SummaryOptions {
+            stopwords: stopwords.clone(),
+            min_explainability: threshold,
+            ..defaults.clone()
+        },
+    );
+    let diagnostics = seg.extract_summary_with_options(
+        text,
+        usize::MAX,
+        &lingxi_core::SummaryOptions {
+            min_sentence_chars: 1,
+            stopwords,
+            redundancy_threshold: None,
+            min_explainability: Some(0.0),
+            preserve_original_order: true,
+            ..defaults
+        },
+    );
+    let diagnostic_by_span: HashMap<(usize, usize), _> = diagnostics
+        .iter()
+        .map(|item| ((item.byte_start, item.byte_end), item))
+        .collect();
+    let selected_spans: HashSet<(usize, usize)> = summary
+        .iter()
+        .map(|item| (item.byte_start, item.byte_end))
+        .collect();
+    let summary_text = if preserve_structured_markdown {
+        text.to_string()
+    } else {
+        summary
+            .iter()
+            .map(|item| item.text.as_str())
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+    let output_tokens = tokenizer.encode_with_special_tokens(&summary_text).len();
+    let clauses = seg
+        .split_clauses(text)
+        .into_iter()
+        .map(|clause| {
+            let key = (clause.byte_start, clause.byte_end);
+            let diagnostic = diagnostic_by_span.get(&key).copied();
+            serde_json::json!({
+                "text": clause.text,
+                "byteStart": clause.byte_start,
+                "byteEnd": clause.byte_end,
+                "sentenceIndex": clause.sentence_index,
+                "clauseIndex": clause.clause_index,
+                "listItem": clause.list_item,
+                "eligible": diagnostic.is_some(),
+                "selected": selected_spans.contains(&key),
+                "importance": diagnostic.map(|item| item.weight),
+                "explainability": diagnostic.map(|item| item.explainability),
+                "novelty": diagnostic.map(|item| item.novelty),
+                "coverageGain": diagnostic.map(|item| item.coverage_gain),
+                "signals": diagnostic.map(|item| serde_json::json!({
+                    "properNounCount": item.signals.proper_noun_count,
+                    "negationCount": item.signals.negation_count,
+                    "emphasisCount": item.signals.emphasis_count,
+                    "listItem": item.signals.list_item,
+                    "objectNameCount": item.signals.object_name_count,
+                    "dateCount": item.signals.date_count,
+                    "numberCount": item.signals.number_count,
+                    "quantityCount": item.signals.quantity_count,
+                    "acronymCount": item.signals.acronym_count,
+                })).unwrap_or_else(|| serde_json::json!({
+                    "properNounCount": 0,
+                    "negationCount": 0,
+                    "emphasisCount": 0,
+                    "listItem": clause.list_item,
+                    "objectNameCount": 0,
+                    "dateCount": 0,
+                    "numberCount": 0,
+                    "quantityCount": 0,
+                    "acronymCount": 0,
+                })),
+            })
+        })
+        .collect::<Vec<_>>();
+    let elapsed_ms = started.elapsed().as_secs_f64() * 1000.0;
+    let reduction_percent = if input_tokens == 0 {
+        0.0
+    } else {
+        (1.0 - output_tokens as f64 / input_tokens as f64) * 100.0
+    };
+    let value = serde_json::json!({
+        "engine": "lingxi-core",
+        "mode": if preserve_structured_markdown {
+            "structured-markdown-preserve-all"
+        } else {
+            "extractive-summary"
+        },
+        "llmCalls": 0,
+        "tokenizer": "o200k_base (tiktoken)",
+        "input": {
+            "text": text,
+            "tokens": input_tokens,
+        },
+        "output": {
+            "text": summary_text,
+            "tokens": output_tokens,
+            "selectedClauses": summary.len(),
+        },
+        "settings": {
+            "maxClauses": top_k,
+            "minExplainability": threshold,
+        },
+        "clauseCount": clauses.len(),
+        "reductionPercent": reduction_percent,
+        "elapsedMs": elapsed_ms,
+        "clauses": clauses,
+    });
+    serde_json::to_writer(&mut *out, &value)?;
+    out.write_all(b"\n")?;
     Ok(())
 }
 

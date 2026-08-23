@@ -266,6 +266,186 @@ pub unsafe extern "C" fn lingxi_utf8_free(value: *mut LingxiUtf8) {
     }
 }
 
+fn json_utf8(value: &serde_json::Value) -> *mut LingxiUtf8 {
+    let Ok(json) = serde_json::to_string(value) else {
+        return std::ptr::null_mut();
+    };
+    let len = json.len();
+    let Ok(data) = CString::new(json) else {
+        return std::ptr::null_mut();
+    };
+    Box::into_raw(Box::new(LingxiUtf8 {
+        len,
+        data: data.into_raw(),
+    }))
+}
+
+/// 中文斷句，回傳含原句、byte offset 與句序的 JSON array。
+///
+/// # Safety
+/// h 必須為有效 handle；utf8 在長度非零時必須指向有效 UTF-8 緩衝。
+#[no_mangle]
+pub unsafe extern "C" fn lingxi_split_sentences_json(
+    h: *const LingxiHandle,
+    utf8: *const u8,
+    len: usize,
+    semicolon_boundary: bool,
+) -> *mut LingxiUtf8 {
+    if h.is_null() {
+        return std::ptr::null_mut();
+    }
+    let Some(text) = utf8_from_raw(utf8, len) else {
+        return std::ptr::null_mut();
+    };
+    let handle = &*h;
+    let value: Vec<_> = handle
+        .seg
+        .split_sentences_with_options(
+            text,
+            lingxi_core::SentenceSplitOptions { semicolon_boundary },
+        )
+        .into_iter()
+        .map(|sentence| {
+            serde_json::json!({
+                "text": sentence.text,
+                "byteStart": sentence.byte_start,
+                "byteEnd": sentence.byte_end,
+                "index": sentence.sentence_index,
+            })
+        })
+        .collect();
+    json_utf8(&serde_json::Value::Array(value))
+}
+
+/// 結構感知子句抽取，回傳原文、byte offset、句序與子句序的 JSON array。
+///
+/// # Safety
+/// h 必須為有效 handle；utf8 在長度非零時必須指向有效 UTF-8 緩衝。
+#[no_mangle]
+pub unsafe extern "C" fn lingxi_split_clauses_json(
+    h: *const LingxiHandle,
+    utf8: *const u8,
+    len: usize,
+) -> *mut LingxiUtf8 {
+    if h.is_null() {
+        return std::ptr::null_mut();
+    }
+    let Some(text) = utf8_from_raw(utf8, len) else {
+        return std::ptr::null_mut();
+    };
+    let handle = &*h;
+    let value: Vec<_> = handle
+        .seg
+        .split_clauses(text)
+        .into_iter()
+        .map(|clause| {
+            serde_json::json!({
+                "text": clause.text,
+                "byteStart": clause.byte_start,
+                "byteEnd": clause.byte_end,
+                "sentenceIndex": clause.sentence_index,
+                "clauseIndex": clause.clause_index,
+                "listItem": clause.list_item,
+            })
+        })
+        .collect();
+    json_utf8(&serde_json::Value::Array(value))
+}
+
+/// TextRank 抽取式摘要 JSON；使用 core 預設選項。
+///
+/// # Safety
+/// h 必須為有效 handle；utf8 在長度非零時必須指向有效 UTF-8 緩衝。
+#[no_mangle]
+pub unsafe extern "C" fn lingxi_extract_summary_json(
+    h: *const LingxiHandle,
+    utf8: *const u8,
+    len: usize,
+    top_k: usize,
+) -> *mut LingxiUtf8 {
+    if h.is_null() {
+        return std::ptr::null_mut();
+    }
+    let Some(text) = utf8_from_raw(utf8, len) else {
+        return std::ptr::null_mut();
+    };
+    let handle = &*h;
+    let value: Vec<_> = handle
+        .seg
+        .extract_summary(text, top_k)
+        .into_iter()
+        .map(|sentence| {
+            serde_json::json!({
+                "text": sentence.text,
+                "byteStart": sentence.byte_start,
+                "byteEnd": sentence.byte_end,
+                "index": sentence.sentence_index,
+                "clauseIndex": sentence.clause_index,
+                "weight": sentence.weight,
+                "explainability": sentence.explainability,
+                "novelty": sentence.novelty,
+                "coverageGain": sentence.coverage_gain,
+                "signals": {
+                    "properNounCount": sentence.signals.proper_noun_count,
+                    "negationCount": sentence.signals.negation_count,
+                    "emphasisCount": sentence.signals.emphasis_count,
+                    "listItem": sentence.signals.list_item,
+                    "objectNameCount": sentence.signals.object_name_count,
+                    "dateCount": sentence.signals.date_count,
+                    "numberCount": sentence.signals.number_count,
+                    "quantityCount": sentence.signals.quantity_count,
+                    "acronymCount": sentence.signals.acronym_count,
+                },
+            })
+        })
+        .collect();
+    json_utf8(&serde_json::Value::Array(value))
+}
+
+/// 相鄰關鍵短語 JSON；使用 core 預設選項。
+///
+/// # Safety
+/// h 必須為有效 handle；utf8 在長度非零時必須指向有效 UTF-8 緩衝。
+#[no_mangle]
+pub unsafe extern "C" fn lingxi_extract_keyphrases_json(
+    h: *const LingxiHandle,
+    utf8: *const u8,
+    len: usize,
+    top_k: usize,
+) -> *mut LingxiUtf8 {
+    if h.is_null() {
+        return std::ptr::null_mut();
+    }
+    let Some(text) = utf8_from_raw(utf8, len) else {
+        return std::ptr::null_mut();
+    };
+    let handle = &*h;
+    let value: Vec<_> = handle
+        .seg
+        .extract_keyphrases(text, top_k)
+        .into_iter()
+        .map(|phrase| {
+            let spans: Vec<_> = phrase
+                .spans
+                .into_iter()
+                .map(|span| {
+                    serde_json::json!({
+                        "byteStart": span.byte_start,
+                        "byteEnd": span.byte_end,
+                    })
+                })
+                .collect();
+            serde_json::json!({
+                "phrase": phrase.phrase,
+                "weight": phrase.weight,
+                "occurrences": phrase.occurrences,
+                "spans": spans,
+            })
+        })
+        .collect();
+    json_utf8(&serde_json::Value::Array(value))
+}
+
 /// 一個關鍵字：NUL 結尾 UTF-8 詞字串（結果持有，隨結果釋放）+ 權重。
 #[repr(C)]
 pub struct LingxiKeyword {

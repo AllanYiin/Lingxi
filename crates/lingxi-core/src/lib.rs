@@ -6,6 +6,7 @@
 
 pub mod affect;
 pub mod chunk;
+pub mod clause;
 pub mod custom_lexicon;
 pub mod dag;
 pub mod dict;
@@ -14,6 +15,8 @@ pub mod model;
 pub mod pos;
 pub mod rules;
 pub mod segment;
+pub mod sentence;
+pub mod summary;
 pub mod userdict;
 
 use std::path::Path;
@@ -25,13 +28,24 @@ pub use affect::{
     EmotionTaxonomy, Polarity,
 };
 use chunk::ChunkKind;
+pub use clause::{split_clauses, split_clauses_with_options, ClauseSpan, ClauseSplitOptions};
 pub use custom_lexicon::{
     parse_custom_lexicon, CustomLexiconEntry, CustomLexiconSpec, SegmenterOptions,
 };
 use dict::Dict;
-pub use keyword::{Keyword, KeywordOptions};
+pub use keyword::{
+    Keyphrase, KeyphraseOptions, Keyword, KeywordExtractionOptions, KeywordOptions,
+    TextRankOptions, TextSpan,
+};
 pub use rules::{known_rules, RuleAction, RuleBucket, RuleInfo, RuleStatus, RuleTrace};
 pub use segment::{SegKind, Segment};
+pub use sentence::{
+    split_sentences, split_sentences_with_options, SentenceSpan, SentenceSplitOptions,
+};
+pub use summary::{
+    should_preserve_structured_markdown, SentenceSimilarity, SummaryOptions, SummarySentence,
+    SummarySignals,
+};
 pub use userdict::{parse_user_dict, UserDictEntry};
 
 /// 全量模型之外、由回歸測試確認的少量穩定邊界覆寫。

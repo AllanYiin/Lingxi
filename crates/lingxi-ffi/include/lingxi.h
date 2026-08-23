@@ -11,6 +11,7 @@
 #ifndef LINGXI_H
 #define LINGXI_H
 
+#include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
 
@@ -71,6 +72,25 @@ void lingxi_tokens_free(LingxiTokens *t);
 LingxiUtf8 *lingxi_annotate_json(const LingxiHandle *h,
                                  const uint8_t *utf8, size_t len);
 void lingxi_utf8_free(LingxiUtf8 *value);
+
+/* 中文斷句 JSON：[{text, byteStart, byteEnd, index}]。 */
+LingxiUtf8 *lingxi_split_sentences_json(const LingxiHandle *h,
+                                        const uint8_t *utf8, size_t len,
+                                        bool semicolon_boundary);
+
+/* 結構感知子句抽取 JSON；保留 byte offset、sentenceIndex 與 clauseIndex。 */
+LingxiUtf8 *lingxi_split_clauses_json(const LingxiHandle *h,
+                                      const uint8_t *utf8, size_t len);
+
+/* TextRank 抽取式摘要 JSON；使用 core 預設選項。 */
+LingxiUtf8 *lingxi_extract_summary_json(const LingxiHandle *h,
+                                        const uint8_t *utf8, size_t len,
+                                        size_t top_k);
+
+/* 相鄰關鍵短語 JSON；使用 core 預設選項。 */
+LingxiUtf8 *lingxi_extract_keyphrases_json(const LingxiHandle *h,
+                                           const uint8_t *utf8, size_t len,
+                                           size_t top_k);
 
 /* TextRank 關鍵字抽取，權重降冪，最多 top_k 個；非法 UTF-8 回 NULL。 */
 LingxiKeywords *lingxi_extract_keywords(const LingxiHandle *h,
