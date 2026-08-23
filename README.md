@@ -2,7 +2,7 @@
 
 ## Overview｜專案概覽
 
-LingXi 是以 Rust 重寫的繁體中文（台灣語料）分詞與詞性標註引擎。專案以單一核心提供 CLI、Python、WASM/JavaScript 與 C ABI，並支援自訂詞典及 TextRank 關鍵字抽取。
+LingXi 是以 Rust 重寫的繁體中文（台灣語料）分詞與詞性標註引擎。專案以單一核心提供 CLI、Python、WASM/JavaScript 與 C ABI，並支援自訂詞典、TextRank 關鍵字／關鍵短語及抽取式摘要。
 
 > [!IMPORTANT]
 > 此 repository 目前只適合公開原始碼。執行完整分詞所需的本機模型不隨 repository 發布；現有模型組合至少包含不可公開再散布的語料衍生資產。請勿提交 `assets/*.bin`、wheel、WASM bundle 或 `dist/` 內部交付包。詳見 [ASSETS.md](ASSETS.md)。
@@ -17,6 +17,9 @@ LingXi 是以 Rust 重寫的繁體中文（台灣語料）分詞與詞性標註�
 - 多份、可分領域、無詞頻的版本化自訂辭典；不改變主詞典總頻率
 - 獨立情感 taxonomy 與詞級多標籤 `annotate`（不做句級情緒推論）
 - TextRank 關鍵字抽取
+- 中文句界與原文 offset
+- TextRank 抽取式摘要（BM25／詞面相似度、去冗餘）
+- 相鄰關鍵詞組成的關鍵短語
 - CLI、Python、WASM/JavaScript、C ABI 四種介面
 
 ## 快速開始：驗證公開原始碼
@@ -63,6 +66,14 @@ echo "市值縮水約1200億美元" | ./target/release/lingxi --format tsv
 echo "搭板南線後感到欣慰" | ./target/release/lingxi \
   --lexicon resources/examples/transit-tw.json \
   --format annotated-json
+
+# 文件分析模式互斥；摘要／短語／斷句／子句輸出 JSONL。
+# 摘要數字是一般候選軟上限；條列、日期、數字與括號內縮略語等硬保留事實可超過上限。
+# 密集 Markdown 重點筆記會完整保留，不再二次簡化。
+lingxi --summary 10 --min-explainability 0.35 article.txt
+lingxi --keyphrases 10 --stopwords stopwords.txt article.txt
+lingxi --sentences article.txt
+lingxi --clauses article.txt
 ```
 
 0.3.0 模型與各 binding 的 `tag` 欄位使用 CKIP 原生詞性代碼。POS 固定在分詞完成後執行，不參與詞界競爭；舊 POS rerank 參數已移除。
@@ -109,6 +120,17 @@ seg.extract_keywords(
     proper_noun_max_ratio=0.4,
 )
 
+# 斷句、結構感知子句、抽取式摘要與相鄰關鍵短語都保留原文位置。
+seg.split_sentences("第一句。第二句！")
+seg.split_clauses("結論（含條件，不拆開），但不得省略。")
+seg.extract_summary(
+    "要摘要的多句長文本",
+    top_k=10,  # 一般候選軟上限；硬保留事實可超過
+    similarity="bm25",
+    min_explainability=0.35,
+)
+seg.extract_keyphrases("要分析的長文本", top_k=10, min_occurrences=1)
+
 ```
 
 ### WASM 與 C ABI
@@ -147,13 +169,14 @@ Rust 可用 `SegmenterOptions { custom_lexicons }` 搭配 `from_asset_dir_with_o
      └─ OOV：字元 joint-state POS HMM
   → Token（原文區間 + 詞性）
   → annotate 可選查詢獨立 affect 索引與自訂辭典來源
+  → 文件分析：斷句／TextRank 關鍵字與短語／抽取式摘要
 ```
 
 ## Repository 結構
 
 | 路徑 | 用途 | 公開狀態 |
 |---|---|---|
-| `crates/lingxi-core` | 分詞、HMM、POS、自訂詞典、TextRank | 可公開 |
+| `crates/lingxi-core` | 分詞、HMM、POS、自訂詞典、TextRank 關鍵字／摘要 | 可公開 |
 | `crates/lingxi-cli` | 命令列工具 | 可公開 |
 | `crates/lingxi-py` | PyO3 + maturin Python binding | 原始碼可公開 |
 | `crates/lingxi-wasm` | wasm-bindgen binding | 原始碼可公開 |
