@@ -4,9 +4,9 @@
   "version": "0.1.0",
   "type": "module",
   "scripts": {
-    "predev": "cargo build --manifest-path ../../Cargo.toml -p lingxi-cli",
+    "predev": "cargo build --release --manifest-path ../../Cargo.toml -p lingxi-cli",
     "dev": "node server.mjs --port 4174",
-    "prestart": "cargo build --manifest-path ../../Cargo.toml -p lingxi-cli",
+    "prestart": "cargo build --release --manifest-path ../../Cargo.toml -p lingxi-cli",
     "start": "node server.mjs --port 4174",
     "test": "node --test tests/*.test.mjs"
   }

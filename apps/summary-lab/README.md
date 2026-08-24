@@ -2,7 +2,7 @@
 
 完全在本機執行的抽取式摘要測試工具。Web server 只呼叫編譯後的 `lingxi` CLI；CLI 使用 LingXi core 與 `o200k_base` tiktoken tokenizer，不連接或呼叫任何 LLM。
 
-條列、日期與數字會被視為重要事實保留，帶單位數值有額外權重；括號或引號中的全大寫縮略語（如 `FOMO`）也會硬保留。若輸入幾乎全是 Markdown 標題與條列，工具會判定它已是高密度重點筆記，完整保留原文並在報告中明示，不再進行二次簡化。`不只`／`不僅` 不會被誤標成否定；條件或數值前件也會與後果一起抽取。
+日期與裸數字是軟加權訊號；條列、非日期帶單位數值及括號或引號中的全大寫縮略語（如 `FOMO`）可略過一般門檻，但一般摘要仍遵守最大子句數。若輸入幾乎全是 Markdown 標題與條列，工具會判定它已是高密度重點筆記，完整保留原文並在報告中明示，不再進行二次簡化。`不只`／`不僅`／`非常`／`是否` 不會被誤標成否定；條件前件、完整定義及「先…再…」處置鏈會一起抽取。
 
 ## 啟動
 
@@ -21,7 +21,7 @@
 ### 開發者手動啟動
 
 ```powershell
-cargo build -p lingxi-cli
+cargo build --release -p lingxi-cli
 cd apps\summary-lab
 npm run dev
 ```
@@ -31,6 +31,8 @@ npm run dev
 - `PORT`：server port，預設 `4174`
 - `LINGXI_BIN`：`lingxi` executable 絕對路徑
 - `LINGXI_ASSETS`：模型資產目錄
+
+預設優先使用 `target/release/lingxi`，避免 debug build 每次分析都承擔較高的資產解碼成本；若 release binary 尚不存在，開發環境仍可退回既有 debug binary。
 
 ## 零 LLM 邊界
 

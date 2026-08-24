@@ -8,7 +8,10 @@ import test from "node:test";
 import { createSummaryLabServer, runSummaryReport } from "../server.mjs";
 
 const repoRoot = fileURLToPath(new URL("../../..", import.meta.url));
-const binary = join(repoRoot, "target", "debug", process.platform === "win32" ? "lingxi.exe" : "lingxi");
+const executableName = process.platform === "win32" ? "lingxi.exe" : "lingxi";
+const releaseBinary = join(repoRoot, "target", "release", executableName);
+const debugBinary = join(repoRoot, "target", "debug", executableName);
+const binary = existsSync(releaseBinary) ? releaseBinary : debugBinary;
 const assetsDir = join(repoRoot, "assets");
 
 test("health endpoint identifies the intended zero-LLM local app", async (context) => {
@@ -64,4 +67,8 @@ test("real zero-LLM report preserves a parenthesized FOMO definition", async (co
   assert.equal(definition.selected, true);
   assert.equal(definition.signals.emphasisCount, 1);
   assert.equal(definition.signals.acronymCount, 1);
+  assert.match(definition.text, /是指看到別人賺錢/);
+  assert.match(definition.text, /焦慮與恐慌。$/);
+  assert.equal(report.output.selectedClauses, 1);
+  assert.equal(report.output.text, definition.text);
 });

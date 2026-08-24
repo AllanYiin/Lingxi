@@ -8,7 +8,10 @@ import { performance } from "node:perf_hooks";
 const appRoot = fileURLToPath(new URL(".", import.meta.url));
 const appBoundary = appRoot.endsWith(sep) ? appRoot : `${appRoot}${sep}`;
 const repoRoot = resolve(appRoot, "../..");
-const defaultBinary = join(repoRoot, "target", "debug", process.platform === "win32" ? "lingxi.exe" : "lingxi");
+const executableName = process.platform === "win32" ? "lingxi.exe" : "lingxi";
+const releaseBinary = join(repoRoot, "target", "release", executableName);
+const debugBinary = join(repoRoot, "target", "debug", executableName);
+const defaultBinary = existsSync(releaseBinary) ? releaseBinary : debugBinary;
 const defaultAssets = join(repoRoot, "assets");
 const maxBodyBytes = 2 * 1024 * 1024;
 
@@ -39,7 +42,7 @@ export function validateAnalyzePayload(value) {
   const maxClauses = Number(value.maxClauses ?? 12);
   const minExplainability = Number(value.minExplainability ?? 0.35);
   if (!Number.isInteger(maxClauses) || maxClauses < 1 || maxClauses > 100) {
-    throw new Error("一般候選軟上限必須是 1 到 100 的整數");
+    throw new Error("摘要子句上限必須是 1 到 100 的整數");
   }
   if (!Number.isFinite(minExplainability) || minExplainability < 0 || minExplainability > 1) {
     throw new Error("可解釋性門檻必須介於 0 到 1");
@@ -62,7 +65,9 @@ export function runSummaryReport(payload, options = {}) {
   const binary = options.binary || process.env.LINGXI_BIN || defaultBinary;
   const assetsDir = options.assetsDir || process.env.LINGXI_ASSETS || defaultAssets;
   if (!existsSync(binary)) {
-    return Promise.reject(new Error(`找不到 LingXi CLI：${binary}。請先執行 cargo build -p lingxi-cli。`));
+    return Promise.reject(
+      new Error(`找不到 LingXi CLI：${binary}。請先執行 cargo build --release -p lingxi-cli。`)
+    );
   }
   if (!existsSync(assetsDir)) {
     return Promise.reject(new Error(`找不到模型資產目錄：${assetsDir}。請設定 LINGXI_ASSETS。`));
