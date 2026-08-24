@@ -68,7 +68,7 @@ echo "搭板南線後感到欣慰" | ./target/release/lingxi \
   --format annotated-json
 
 # 文件分析模式互斥；摘要／短語／斷句／子句輸出 JSONL。
-# 摘要數字是一般候選軟上限；條列、日期、數字與括號內縮略語等硬保留事實可超過上限。
+# 摘要數字是一般輸出的硬上限；密集 Markdown 完整保留模式是唯一例外。
 # 密集 Markdown 重點筆記會完整保留，不再二次簡化。
 lingxi --summary 10 --min-explainability 0.35 article.txt
 lingxi --keyphrases 10 --stopwords stopwords.txt article.txt
@@ -125,7 +125,7 @@ seg.split_sentences("第一句。第二句！")
 seg.split_clauses("結論（含條件，不拆開），但不得省略。")
 seg.extract_summary(
     "要摘要的多句長文本",
-    top_k=10,  # 一般候選軟上限；硬保留事實可超過
+    top_k=10,  # 一般摘要輸出的硬上限
     similarity="bm25",
     min_explainability=0.35,
 )
@@ -190,25 +190,24 @@ Rust 可用 `SegmenterOptions { custom_lexicons }` 搭配 `from_asset_dir_with_o
 
 ## Trident 全量測試：LingXi vs jieba
 
-以下結果使用 Trident 0.7.12 `load_examples_data("chinese")` 的完整測試集：4,263 句、265,287 字，分詞 BMES gold 共 163,498 詞。測試於 2026-08-04 在 Windows x86_64（24 logical processors）、Python 3.10.10 與 rustc 1.96.0 上執行；LingXi 使用 0.3.0 release CLI 與本機 LXA2 模型，jieba 版本為 0.42.1。
+以下結果使用 Trident 0.7.12 `load_examples_data("chinese")` 的完整測試集：4,263 句、265,287 字，分詞 BMES gold 共 163,498 詞。測試於 2026-08-23 在 Windows x86_64（24 logical processors）、Python 3.10.10 與 rustc 1.96.0 上執行；LingXi 使用 0.3.0 release CLI 與本機 LXA2 模型，jieba 版本為 0.42.1。
 
-| 模型 | 分詞正確性（Word F1） | 分詞執行時間 | 詞性正確性（共同 POS accuracy） | 詞性執行時間 | 詞界＋POS F1 |
-|---|---:|---:|---:|---:|---:|
-| jieba 0.42.1 | 74.76% | 765.93 ms | 69.89% | 199,887.94 ms | 52.21% |
-| LingXi 0.3.0 | **86.34%** | **291.00 ms** | **93.80%** | **963.00 ms** | **79.79%** |
+| 模型 | 載入時間 | 純分詞時間中位數 | 句／秒 | Word P | Word R | Word F1 | Boundary F1 | 整句完全一致 |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| jieba 0.42.1 | **338.42 ms** | 690.85 ms | 6,170.6 | 75.75% | 73.80% | 74.76% | 89.41% | 2.49% |
+| LingXi 0.3.0 | 349.00 ms | **344.00 ms** | **12,392.4** | **88.57%** | **85.12%** | **86.81%** | **94.81%** | **12.69%** |
 
-分詞正確性以 Trident BMES 詞界計算 micro Word F1。Trident 未提供本比較所需的 CKIP 詞性 gold，因此詞性評測使用同一批句子的 CKIPTagger WS＋POS silver annotations（164,109 tokens），並排除標點；「共同 POS accuracy」只計算 gold 與預測詞界完全對齊的實詞 token，再把 CKIP 與 jieba 標籤映射到共同 tag set。「詞界＋POS F1」則同時懲罰詞界和詞性錯誤，較能反映端到端結果。silver annotations 未經逐筆人工覆核，不應視為人工 gold benchmark。
+分詞正確性以 Trident BMES 詞界計算 micro Word precision、recall 與 F1；Boundary F1 比較相鄰字元間的詞界，整句完全一致則要求該句所有詞界皆符合 gold。LingXi 的純分詞速度約為 jieba 的 2.01 倍，Word F1 高 12.05 個百分點；若連同各自模型載入時間計算，端到端時間分別約為 693.90 ms 與 1,029.27 ms，LingXi 約快 1.48 倍。
 
-兩種模式皆先暖機，再完整執行 3 次並取處理時間中位數；資料集與模型載入時間不計。分詞時間只含分詞；詞性時間為分詞＋POS 的端到端時間。LingXi 數字來自 release CLI 回報的處理時間（含輸出序列化），jieba 則在同一 Python 行程內以 `cut(cut_all=False, HMM=True)`／`posseg.cut(HMM=True)` 執行。不同硬體、模型資產與執行環境的時間不可直接互比。
+兩者皆先暖機，再完整執行 3 次並取處理時間中位數；Trident 資料集載入時間與模型載入時間不計入純分詞時間。LingXi 數字來自 release CLI 的 `words` 模式（含輸出序列化），jieba 則在同一 Python 行程內逐句執行 `cut(cut_all=False, HMM=True)`。不同硬體、模型資產與執行環境的時間不可直接互比。
 
-內部維護者備妥 `assets/`、0.2.2 對照包與 `.corpus-work/model-evaluation/trident-test-ckip-gold.jsonl` 後，可重現本次報告：
+內部維護者備妥 `assets/` 與 0.2.2 對照包後，可重現本次報告：
 
 ```bash
-python corpus/compare_022_030_jieba.py \
-  --limit 4263 \
+python corpus/compare_segmentation_trident.py \
   --repeats 3 \
-  --output-json .corpus-work/model-evaluation/jieba-lingxi-022-030-full-comparison.json \
-  --output-markdown .corpus-work/model-evaluation/jieba-lingxi-022-030-full-comparison.md
+  --output-json .corpus-work/model-evaluation/trident-full-segmentation.json \
+  --output-markdown .corpus-work/model-evaluation/trident-full-segmentation.md
 ```
 
 ## 效能基線
