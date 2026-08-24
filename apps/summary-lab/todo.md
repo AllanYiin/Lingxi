@@ -9,7 +9,7 @@
 - [x] 執行 APSM strict validation
 - [x] 實際執行 Windows 一鍵啟動與摘要 smoke test
 - [x] 記錄可恢復方式與打包限制：模型 assets 目前標示不可再散布，暫不產出可能缺少模型的誤導性 standalone ZIP
-- [x] 將條列、日期與數字設為硬保留訊號
+- [x] 加入條列、日期與數字診斷訊號（後續依品質評估調整硬保留範圍）
 - [x] 加入密集 Markdown 筆記完整保留模式
 - [x] 修正 `不只`／`不僅` 否定誤判與條件前件截斷
 - [x] 同步報告欄位、診斷色標與跨語言 bindings
@@ -17,3 +17,9 @@
 - [x] 新增全大寫縮略語與括號內定義偵測
 - [x] 同步縮略語報告欄位、bindings 與 UI 色標
 - [x] 以 `Fear Of Missing Out（FOMO）` 完成核心、CLI 與畫面驗證
+- [x] 將 `maxClauses` 改為一般摘要硬上限，日期與裸數字降為軟訊號
+- [x] 保留完整定義與「先…再…」處置鏈，避免懸空子句
+- [x] 修正 `非常`／`是否` 等否定訊號誤判
+- [x] 讓覆蓋增益與新穎性實際參與逐步選句
+- [x] 建立零 LLM 摘要品質回歸評測案例
+- [x] Summary Lab 預設建置並優先使用 release CLI，保留 debug fallback

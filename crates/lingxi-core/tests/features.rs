@@ -335,7 +335,7 @@ fn dense_markdown_notes_are_preserved_even_when_top_k_is_small() {
 }
 
 #[test]
-fn lists_dates_and_numbers_override_limit_and_threshold() {
+fn hard_fact_signals_obey_the_summary_budget() {
     let Ok(seg) = Segmenter::from_asset_dir(ASSET_DIR) else {
         eprintln!("assets 不存在，跳過");
         return;
@@ -349,11 +349,51 @@ fn lists_dates_and_numbers_override_limit_and_threshold() {
             ..SummaryOptions::default()
         },
     );
-    assert!(summary.len() > 1, "硬保留內容可超過一般 top_k 上限");
-    assert!(summary.iter().any(|item| item.signals.list_item));
-    assert!(summary.iter().any(|item| item.signals.date_count > 0));
-    assert!(summary.iter().any(|item| item.signals.quantity_count > 0));
-    assert!(summary.iter().any(|item| item.text.contains("1,024")));
+    assert_eq!(summary.len(), 1, "一般摘要必須遵守 top_k 硬上限");
+    assert!(
+        summary[0].signals.list_item || summary[0].signals.quantity_count > 0,
+        "門檻豁免訊號仍應參與預算內競爭"
+    );
+}
+
+#[test]
+fn irrelevant_dates_do_not_displace_an_explicit_research_conclusion() {
+    let Ok(seg) = Segmenter::from_asset_dir(ASSET_DIR) else {
+        eprintln!("assets 不存在，跳過");
+        return;
+    };
+    let text = "版權頁記載本書出版於2024年。作者曾在2019年搬家。研究核心發現是睡眠品質與記憶鞏固密切相關。實驗指出規律作息有助提升學習表現。";
+    let summary = seg.extract_summary(text, 1);
+    assert_eq!(summary.len(), 1);
+    assert!(summary[0].text.contains("研究核心發現"), "{summary:?}");
+}
+
+#[test]
+fn discourse_markers_break_disconnected_graph_ties() {
+    let Ok(seg) = Segmenter::from_asset_dir(ASSET_DIR) else {
+        eprintln!("assets 不存在，跳過");
+        return;
+    };
+    let text = "昨天傍晚公園裡有一隻橘貓在長椅旁曬太陽。研究結論指出規律運動能降低心血管疾病風險。政策建議包括每週安排中等強度活動並改善步行環境。";
+    let summary = seg.extract_summary(text, 1);
+    assert_eq!(summary.len(), 1);
+    assert!(summary[0].text.contains("研究結論"), "{summary:?}");
+}
+
+#[test]
+fn ordered_actions_are_not_emitted_as_dangling_clauses() {
+    let Ok(seg) = Segmenter::from_asset_dir(ASSET_DIR) else {
+        eprintln!("assets 不存在，跳過");
+        return;
+    };
+    let actions = "團隊決定先擴充容量，再修正記憶體洩漏問題，預計可恢復服務穩定性。";
+    let text = format!("伺服器在尖峰時段頻繁重啟。{actions}");
+    let summary = seg.extract_summary(&text, 2);
+    assert!(
+        summary.iter().any(|item| item.text == actions),
+        "{summary:?}"
+    );
+    assert!(summary.iter().all(|item| !item.text.ends_with('，')));
 }
 
 #[test]
@@ -395,7 +435,9 @@ fn parenthesized_uppercase_acronym_survives_a_strict_gate() {
     let fomo = summary
         .iter()
         .find(|item| item.text.contains("FOMO"))
-        .expect("括號內全大寫縮略語應略過一般門檻與軟上限");
+        .expect("括號內全大寫縮略語應略過一般門檻並在預算內優先入選");
     assert_eq!(fomo.signals.acronym_count, 1);
     assert_eq!(fomo.signals.emphasis_count, 1);
+    assert!(fomo.text.contains("看到別人賺錢"), "{fomo:?}");
+    assert!(fomo.text.ends_with("焦慮與恐慌。"), "{fomo:?}");
 }

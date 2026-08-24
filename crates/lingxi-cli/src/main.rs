@@ -47,7 +47,7 @@ struct Args {
     sentences: bool,
     /// 結構感知子句 JSONL 模式。
     clauses: bool,
-    /// 一般摘要候選的最低可解釋性；硬保留事實可略過門檻與 `top_k` 軟上限。
+    /// 一般摘要候選的最低可解釋性；高風險訊號可略過門檻但仍遵守 `top_k`。
     min_explainability: Option<f32>,
     /// 可選停用詞檔，每行一詞。
     stopwords: Option<String>,

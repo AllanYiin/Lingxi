@@ -265,6 +265,18 @@ mod tests {
     }
 
     #[test]
+    fn keeps_definitions_and_ordered_actions_complete() {
+        let definition =
+            "Fear Of Missing Out（FOMO）在投資市場，是指看到別人賺錢，自己沒跟上而感到焦慮與恐慌。";
+        assert_eq!(split_clauses(definition)[0].text, definition);
+        assert_eq!(split_clauses(definition).len(), 1);
+
+        let actions = "團隊決定先擴充容量，再修正記憶體洩漏問題，預計可恢復服務穩定性。";
+        assert_eq!(split_clauses(actions)[0].text, actions);
+        assert_eq!(split_clauses(actions).len(), 1);
+    }
+
+    #[test]
     fn does_not_split_thousands_separators() {
         let text = "樣本共1,024人，風險增加15%。";
         let clauses = split_clauses(text);

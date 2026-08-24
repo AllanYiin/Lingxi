@@ -89,7 +89,35 @@ pub(crate) fn requires_following_clause(candidate: &str, boundary: char) -> bool
         ]
         .iter()
         .any(|unit| content.ends_with(unit));
-    correlative || dependent_prefix || quantitative_condition
+    let definition = contains_parenthesized_acronym(content)
+        || ["是指", "意指", "指的是", "定義為", "也就是", "換言之"]
+            .iter()
+            .any(|marker| content.contains(marker));
+    let ordered_sequence = content.match_indices('先').any(|(index, _)| {
+        !content[index + '先'.len_utf8()..]
+            .starts_with(|next| matches!(next, '生' | '進' | '前' | '祖'))
+    });
+    correlative || dependent_prefix || quantitative_condition || definition || ordered_sequence
+}
+
+fn contains_parenthesized_acronym(text: &str) -> bool {
+    [('（', '）'), ('(', ')')].into_iter().any(|(open, close)| {
+        let Some(start) = text.rfind(open) else {
+            return false;
+        };
+        let Some(end_offset) = text[start + open.len_utf8()..].find(close) else {
+            return false;
+        };
+        let value = &text[start + open.len_utf8()..start + open.len_utf8() + end_offset];
+        let uppercase = value.chars().filter(|ch| ch.is_ascii_uppercase()).count();
+        uppercase >= 2
+            && value.chars().count() <= 12
+            && value.chars().all(|ch| {
+                ch.is_ascii_uppercase()
+                    || ch.is_ascii_digit()
+                    || matches!(ch, '&' | '-' | '.' | '/')
+            })
+    })
 }
 
 fn is_terminal(ch: char, options: SentenceSplitOptions) -> bool {
@@ -161,5 +189,16 @@ mod tests {
         let sentences = split_sentences(text);
         assert_eq!(sentences.len(), 1);
         assert_eq!(sentences[0].text, text);
+    }
+
+    #[test]
+    fn recognizes_definition_and_ordered_sequence_as_dependent_clauses() {
+        assert!(requires_following_clause(
+            "Fear Of Missing Out（FOMO）在投資市場，",
+            '，'
+        ));
+        assert!(requires_following_clause("FOMO 是指害怕錯過機會，", '，'));
+        assert!(requires_following_clause("團隊決定先擴充容量，", '，'));
+        assert!(!requires_following_clause("先進製程已經量產，", '，'));
     }
 }

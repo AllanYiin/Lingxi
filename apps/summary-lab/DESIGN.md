@@ -49,7 +49,7 @@ After that I should be guided to 句子診斷與累積曲線
 |---|---|
 | Primary goal | 貼入原文並執行 deterministic 摘要 |
 | Secondary goal | 比較 before / after token 數與計算耗時 |
-| Low-frequency goal | 調整一般候選軟上限與可解釋性門檻 |
+| Low-frequency goal | 調整摘要子句上限與可解釋性門檻 |
 | Rare goal | 逐句稽核特殊加權、分數與累積曲線，診斷空結果或模型資產錯誤 |
 
 ## State model
@@ -86,7 +86,7 @@ Primary question：這段原文經 LingXi deterministic 計算後，最佳摘要
 - `must-see-now`：文字輸入、字數、本機／零 LLM 狀態、執行。
 - `next-step-only`：token 比較、耗時、before / after、結果 tabs。
 - `error-only`：CLI 未建置、模型不存在、輸入或 report 無效。
-- `on-demand-reference`：一般候選軟上限、門檻、所有逐句分數、累積曲線。
+- `on-demand-reference`：摘要子句上限、門檻、所有逐句分數、累積曲線。
 - `keep-off-first-viewport`：完整句子診斷、訊號圖例、演算法細節。
 
 ## Deferred blocks and reveal rationale

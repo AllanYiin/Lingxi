@@ -31,7 +31,8 @@ pub struct SummaryOptions {
     pub tolerance: Option<f32>,
     /// Some(0..=1) 時，以詞彙及有限規則型語意重疊避免選入高度重複句。
     pub redundancy_threshold: Option<f32>,
-    /// 候選的可解釋性分數低於此絕對門檻時不納入；`None` 關閉自適應句數。
+    /// 一般候選的可解釋性分數低於此絕對門檻時不納入；高風險訊號可略過。
+    /// `None` 關閉自適應句數；非 Markdown 完整保留模式仍遵守 `top_k`。
     /// 分數由相關性、覆蓋增益、新穎性與可辨識訊號組成，不是固定百分比。
     pub min_explainability: Option<f32>,
     pub preserve_original_order: bool,
@@ -90,10 +91,8 @@ impl SummarySignals {
         (present as f32 / 5.0).min(1.0)
     }
 
-    fn must_preserve(&self) -> bool {
+    fn threshold_exempt(&self) -> bool {
         self.list_item
-            || self.date_count > 0
-            || self.number_count > 0
             || self.quantity_count > 0
             || (self.acronym_count > 0 && self.emphasis_count > 0)
     }
@@ -223,7 +222,7 @@ impl Segmenter {
             }
             if length == 0
                 && (preserve_structured_markdown
-                    || signals.must_preserve()
+                    || signals.threshold_exempt()
                     || signals.has_numeric_fact())
             {
                 let fallback = slice.trim();
@@ -248,7 +247,7 @@ impl Segmenter {
             let sentence = &sentences[0].span;
             let explainability =
                 explainability_score(1.0, 1.0, 1.0, sentences[0].signals.coverage());
-            if !sentences[0].signals.must_preserve()
+            if !sentences[0].signals.threshold_exempt()
                 && options
                     .min_explainability
                     .filter(|value| value.is_finite())
@@ -274,17 +273,8 @@ impl Segmenter {
         let similarities = similarity_matrix(&sentences, options.similarity);
         let mut scores = page_rank(&similarities, options);
         for (score, sentence) in scores.iter_mut().zip(&sentences) {
-            *score = signal_adjusted_relevance(*score, &sentence.signals);
+            *score = signal_adjusted_relevance(*score, &sentence.signals, &sentence.span.text);
         }
-        let mut ranked: Vec<usize> = (0..sentences.len()).collect();
-        ranked.sort_by(|&a, &b| {
-            scores[b].total_cmp(&scores[a]).then_with(|| {
-                sentences[a]
-                    .span
-                    .sentence_index
-                    .cmp(&sentences[b].span.sentence_index)
-            })
-        });
 
         let wanted = top_k.min(sentences.len());
         let redundancy_threshold = options
@@ -297,54 +287,84 @@ impl Segmenter {
             .map(|value| value.clamp(0.0, 1.0));
         let mut selected: Vec<(usize, f32, f32, f32)> = Vec::with_capacity(sentences.len());
         let mut coverage = vec![0.0f32; sentences.len()];
-        let mandatory = (0..sentences.len())
-            .filter(|&index| {
-                preserve_structured_markdown || sentences[index].signals.must_preserve()
-            })
-            .collect::<Vec<_>>();
-        for index in mandatory {
-            let max_overlap = selected
-                .iter()
-                .map(|(chosen, _, _, _)| redundancy_overlap(&sentences[index], &sentences[*chosen]))
-                .fold(0.0f32, f32::max);
-            let novelty = 1.0 - max_overlap;
-            let coverage_gain = marginal_coverage_gain(index, &similarities, &coverage);
-            let explainability = explainability_score(
-                scores[index],
-                coverage_gain,
-                novelty,
-                sentences[index].signals.coverage(),
-            );
-            update_coverage(index, &similarities, &mut coverage);
-            selected.push((index, explainability, novelty, coverage_gain));
-        }
-        for index in ranked {
-            if selected.len() >= wanted {
-                break;
+        if preserve_structured_markdown {
+            for index in 0..sentences.len() {
+                let max_overlap = selected
+                    .iter()
+                    .map(|(chosen, _, _, _)| {
+                        redundancy_overlap(&sentences[index], &sentences[*chosen])
+                    })
+                    .fold(0.0f32, f32::max);
+                let novelty = 1.0 - max_overlap;
+                let coverage_gain = marginal_coverage_gain(index, &similarities, &coverage);
+                let explainability = explainability_score(
+                    scores[index],
+                    coverage_gain,
+                    novelty,
+                    sentences[index].signals.coverage(),
+                );
+                update_coverage(index, &similarities, &mut coverage);
+                selected.push((index, explainability, novelty, coverage_gain));
             }
-            if selected.iter().any(|(chosen, _, _, _)| *chosen == index) {
-                continue;
+        } else {
+            while selected.len() < wanted {
+                let mut best: Option<(usize, f32, f32, f32, f32)> = None;
+                for index in 0..sentences.len() {
+                    if selected.iter().any(|(chosen, _, _, _)| *chosen == index) {
+                        continue;
+                    }
+                    let max_overlap = selected
+                        .iter()
+                        .map(|(chosen, _, _, _)| {
+                            redundancy_overlap(&sentences[index], &sentences[*chosen])
+                        })
+                        .fold(0.0f32, f32::max);
+                    if redundancy_threshold.is_some_and(|limit| max_overlap >= limit) {
+                        continue;
+                    }
+                    let novelty = 1.0 - max_overlap;
+                    let coverage_gain = marginal_coverage_gain(index, &similarities, &coverage);
+                    let signal_coverage = sentences[index].signals.coverage();
+                    let explainability = explainability_score(
+                        scores[index],
+                        coverage_gain,
+                        novelty,
+                        signal_coverage,
+                    );
+                    if !sentences[index].signals.threshold_exempt()
+                        && explainability_threshold.is_some_and(|limit| explainability < limit)
+                    {
+                        continue;
+                    }
+                    let selection_score = selection_objective(
+                        scores[index],
+                        coverage_gain,
+                        novelty,
+                        signal_coverage,
+                        sentences[index].signals.threshold_exempt(),
+                    );
+                    let replace = best.as_ref().is_none_or(|current| {
+                        selection_score > current.4
+                            || (selection_score == current.4
+                                && sentences[index].span.clause_index
+                                    < sentences[current.0].span.clause_index)
+                    });
+                    if replace {
+                        best = Some((
+                            index,
+                            explainability,
+                            novelty,
+                            coverage_gain,
+                            selection_score,
+                        ));
+                    }
+                }
+                let Some((index, explainability, novelty, coverage_gain, _)) = best else {
+                    break;
+                };
+                update_coverage(index, &similarities, &mut coverage);
+                selected.push((index, explainability, novelty, coverage_gain));
             }
-            let max_overlap = selected
-                .iter()
-                .map(|(chosen, _, _, _)| redundancy_overlap(&sentences[index], &sentences[*chosen]))
-                .fold(0.0f32, f32::max);
-            if redundancy_threshold.is_some_and(|limit| max_overlap >= limit) {
-                continue;
-            }
-            let novelty = 1.0 - max_overlap;
-            let coverage_gain = marginal_coverage_gain(index, &similarities, &coverage);
-            let explainability = explainability_score(
-                scores[index],
-                coverage_gain,
-                novelty,
-                sentences[index].signals.coverage(),
-            );
-            if explainability_threshold.is_some_and(|limit| explainability < limit) {
-                continue;
-            }
-            update_coverage(index, &similarities, &mut coverage);
-            selected.push((index, explainability, novelty, coverage_gain));
         }
         if options.preserve_original_order {
             selected.sort_unstable_by_key(|(index, _, _, _)| sentences[*index].span.clause_index);
@@ -399,15 +419,13 @@ pub fn should_preserve_structured_markdown(text: &str) -> bool {
 }
 
 fn summary_signals<'a>(text: &str, tags: impl Iterator<Item = &'a str>) -> SummarySignals {
-    static NEGATION: OnceLock<Regex> = OnceLock::new();
+    static NEGATION_DIRECTIVE: OnceLock<Regex> = OnceLock::new();
     static OBJECT_NAME: OnceLock<Regex> = OnceLock::new();
     static DATE: OnceLock<Regex> = OnceLock::new();
     static NUMBER: OnceLock<Regex> = OnceLock::new();
     static QUANTITY: OnceLock<Regex> = OnceLock::new();
-    let negation = NEGATION.get_or_init(|| {
-        Regex::new(r"並非|並未|從未|沒有|禁止|避免|未|無|沒|非|否|勿|莫|別")
-            .expect("固定否定詞 regex 應有效")
-    });
+    let negation_directive = NEGATION_DIRECTIVE
+        .get_or_init(|| Regex::new(r"禁止|避免|勿|莫").expect("固定否定指令 regex 應有效"));
     let object_name = OBJECT_NAME.get_or_init(|| {
         Regex::new(
             r"`[^`\r\n]+`|[A-Za-z_][A-Za-z0-9_.:-]*\s*[\(（]|(?:[A-Za-z][A-Za-z0-9_-]*\.)+[A-Za-z_][A-Za-z0-9_-]*|\b[A-Za-z][A-Za-z0-9]*_[A-Za-z0-9_]+\b|\b[A-Za-z_][A-Za-z0-9_]*(?:::[A-Za-z_][A-Za-z0-9_]*)+\b",
@@ -429,43 +447,81 @@ fn summary_signals<'a>(text: &str, tags: impl Iterator<Item = &'a str>) -> Summa
         )
         .expect("固定帶單位數值 regex 應有效")
     });
+    let date_spans = date
+        .find_iter(text)
+        .map(|item| (item.start(), item.end()))
+        .collect::<Vec<_>>();
+    let quantity_count = quantity
+        .find_iter(text)
+        .filter(|item| {
+            !date_spans
+                .iter()
+                .any(|(start, end)| item.start() >= *start && item.end() <= *end)
+        })
+        .count();
     SummarySignals {
         proper_noun_count: tags.filter(|tag| matches!(*tag, "Nb" | "Nc")).count(),
-        negation_count: negation.find_iter(text).count()
-            + text
-                .match_indices('不')
-                .filter(|(index, _)| {
-                    !text[*index + '不'.len_utf8()..]
-                        .starts_with(|next| matches!(next, '只' | '僅'))
-                })
-                .count(),
+        negation_count: negation_directive.find_iter(text).count() + lexical_negation_count(text),
         emphasis_count: emphasis_count(text),
         list_item: is_list_item(text),
         object_name_count: object_name.find_iter(text).count(),
-        date_count: date.find_iter(text).count(),
+        date_count: date_spans.len(),
         number_count: number.find_iter(text).count(),
-        quantity_count: quantity.find_iter(text).count(),
+        quantity_count,
         acronym_count: acronym_count(text),
     }
 }
 
-fn signal_adjusted_relevance(relevance: f32, signals: &SummarySignals) -> f32 {
+fn lexical_negation_count(text: &str) -> usize {
+    text.char_indices()
+        .filter(|(index, ch)| {
+            let next = text[*index + ch.len_utf8()..].chars().next();
+            let previous = text[..*index].chars().next_back();
+            match ch {
+                '不' => !matches!(next, Some('只' | '僅' | '但' | '錯' | '凡' | '同')),
+                '未' => !matches!(next, Some('來')),
+                '無' => !matches!(next, Some('論' | '比' | '數')),
+                '沒' => !matches!(next, Some('錯')),
+                '非' => !matches!(next, Some('常' | '凡' | '洲')),
+                '否' => previous != Some('是') && next != Some('則'),
+                _ => false,
+            }
+        })
+        .count()
+}
+
+fn signal_adjusted_relevance(relevance: f32, signals: &SummarySignals, text: &str) -> f32 {
     let floor: f32 = if signals.list_item {
         0.90
     } else if signals.acronym_count > 0 && signals.emphasis_count > 0 {
         0.90
     } else if signals.quantity_count > 0 {
-        0.85
+        0.75
     } else if signals.date_count > 0 {
-        0.80
+        0.55
     } else if signals.acronym_count > 0 {
         0.75
     } else if signals.number_count > 0 {
-        0.60
+        0.45
     } else {
         0.0
     };
-    relevance.clamp(0.0, 1.0).max(floor)
+    let discourse_bonus = if ["研究核心發現", "核心發現", "研究結論", "主要結論"]
+        .iter()
+        .any(|marker| text.contains(marker))
+    {
+        0.20
+    } else if ["結果顯示", "結果指出", "結論", "建議", "因此", "所以"]
+        .iter()
+        .any(|marker| text.contains(marker))
+    {
+        0.15
+    } else {
+        0.0
+    };
+    (0.80 * relevance.clamp(0.0, 1.0) + discourse_bonus)
+        .clamp(0.0, 1.0)
+        .max(floor)
 }
 
 fn acronym_count(text: &str) -> usize {
@@ -564,6 +620,21 @@ fn explainability_score(
         + 0.20 * coverage_gain.clamp(0.0, 1.0)
         + 0.10 * novelty.clamp(0.0, 1.0)
         + 0.25 * signal_coverage.clamp(0.0, 1.0))
+    .clamp(0.0, 1.0)
+}
+
+fn selection_objective(
+    relevance: f32,
+    coverage_gain: f32,
+    novelty: f32,
+    signal_coverage: f32,
+    threshold_exempt: bool,
+) -> f32 {
+    (0.50 * relevance.clamp(0.0, 1.0)
+        + 0.25 * coverage_gain.clamp(0.0, 1.0)
+        + 0.15 * novelty.clamp(0.0, 1.0)
+        + 0.10 * signal_coverage.clamp(0.0, 1.0)
+        + if threshold_exempt { 0.05 } else { 0.0 })
     .clamp(0.0, 1.0)
 }
 
@@ -801,6 +872,10 @@ mod tests {
         let correlative = summary_signals("不只會傷腎，不僅影響循環", std::iter::empty());
         assert_eq!(correlative.negation_count, 0);
 
+        let non_negative =
+            summary_signals("這項成果非常重要，團隊評估是否擴大試辦", std::iter::empty());
+        assert_eq!(non_negative.negation_count, 0);
+
         let negative = summary_signals("不要久坐，也不能忽略風險", std::iter::empty());
         assert_eq!(negative.negation_count, 2);
     }
@@ -814,7 +889,12 @@ mod tests {
         assert_eq!(signals.date_count, 1);
         assert_eq!(signals.quantity_count, 1);
         assert!(signals.number_count >= 3);
-        assert!(signals.must_preserve());
+        assert!(signals.threshold_exempt());
+
+        let date_only = summary_signals("本書出版於2024年", std::iter::empty());
+        assert_eq!(date_only.date_count, 1);
+        assert_eq!(date_only.quantity_count, 0);
+        assert!(!date_only.threshold_exempt());
 
         let classifier = summary_signals("每天久坐超過10個小時", std::iter::empty());
         assert_eq!(classifier.quantity_count, 1);
@@ -825,12 +905,12 @@ mod tests {
         let defined = summary_signals("Fear Of Missing Out（FOMO）在投資市場", std::iter::empty());
         assert_eq!(defined.acronym_count, 1);
         assert_eq!(defined.emphasis_count, 1);
-        assert!(defined.must_preserve());
+        assert!(defined.threshold_exempt());
 
         let adjacent = summary_signals("FOMO情緒燒起來", std::iter::empty());
         assert_eq!(adjacent.acronym_count, 1);
         assert_eq!(adjacent.emphasis_count, 0);
-        assert!(!adjacent.must_preserve());
+        assert!(!adjacent.threshold_exempt());
         assert_eq!(acronym_count("fomo不是全大寫縮略語"), 0);
     }
 
