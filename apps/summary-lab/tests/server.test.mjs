@@ -42,14 +42,16 @@ test("real zero-LLM report preserves dense Markdown exactly", async (context) =>
   }
   const text = await readFile(new URL("fixtures/dense-markdown.md", import.meta.url), "utf8");
   const report = await runSummaryReport(
-    { text, maxClauses: 1, minExplainability: 0.99 },
+    { text, maxBlocks: 1, minExplainability: 0.99 },
     { binary, assetsDir }
   );
   assert.equal(report.llmCalls, 0);
-  assert.equal(report.mode, "structured-markdown-preserve-all");
+  assert.equal(report.schemaVersion, 2);
+  assert.equal(report.mode, "hierarchical-extractive");
   assert.equal(report.output.text, report.input.text);
   assert.equal(report.output.tokens, report.input.tokens);
-  assert.equal(report.output.selectedClauses, report.clauseCount);
+  assert.equal(report.output.selectedBlocks, 0);
+  assert.ok(report.budget.preservedBlocks >= 8);
 });
 
 test("real zero-LLM report preserves a parenthesized FOMO definition", async (context) => {
@@ -59,16 +61,16 @@ test("real zero-LLM report preserves a parenthesized FOMO definition", async (co
   }
   const text = await readFile(new URL("fixtures/fomo.txt", import.meta.url), "utf8");
   const report = await runSummaryReport(
-    { text, maxClauses: 1, minExplainability: 0.99 },
+    { text, maxBlocks: 1, minExplainability: 0 },
     { binary, assetsDir }
   );
-  const definition = report.clauses.find((clause) => clause.text.includes("Fear Of Missing Out（FOMO）"));
+  const definition = report.blocks.find((block) => block.sourceText.includes("Fear Of Missing Out（FOMO）"));
   assert.equal(report.llmCalls, 0);
-  assert.equal(definition.selected, true);
+  assert.notEqual(definition.decision, "omit");
   assert.equal(definition.signals.emphasisCount, 1);
   assert.equal(definition.signals.acronymCount, 1);
-  assert.match(definition.text, /是指看到別人賺錢/);
-  assert.match(definition.text, /焦慮與恐慌。$/);
-  assert.equal(report.output.selectedClauses, 1);
-  assert.equal(report.output.text, definition.text);
+  assert.match(definition.sourceText, /是指看到別人賺錢/);
+  assert.match(definition.sourceText.trimEnd(), /焦慮與恐慌。$/);
+  assert.equal(report.output.selectedBlocks, 1);
+  assert.match(report.output.text, /Fear Of Missing Out/);
 });

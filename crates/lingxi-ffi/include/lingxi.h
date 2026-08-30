@@ -82,10 +82,10 @@ LingxiUtf8 *lingxi_split_sentences_json(const LingxiHandle *h,
 LingxiUtf8 *lingxi_split_clauses_json(const LingxiHandle *h,
                                       const uint8_t *utf8, size_t len);
 
-/* TextRank 抽取式摘要 JSON；使用 core 預設選項。 */
+/* schema v2 結構感知摘要 JSON；max_blocks 只限制 paragraph/blockquote。 */
 LingxiUtf8 *lingxi_extract_summary_json(const LingxiHandle *h,
                                         const uint8_t *utf8, size_t len,
-                                        size_t top_k);
+                                        size_t max_blocks);
 
 /* 相鄰關鍵短語 JSON；使用 core 預設選項。 */
 LingxiUtf8 *lingxi_extract_keyphrases_json(const LingxiHandle *h,

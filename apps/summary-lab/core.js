@@ -7,6 +7,7 @@ export const SIGNALS = [
   { key: "dateCount", label: "日期", className: "signal--date" },
   { key: "numberCount", label: "數字", className: "signal--number" },
   { key: "quantityCount", label: "數值＋單位", className: "signal--quantity" },
+  { key: "moneyCount", label: "金額", className: "signal--quantity" },
   { key: "acronymCount", label: "縮略語", className: "signal--acronym" }
 ];
 
@@ -14,19 +15,19 @@ export function activeSignals(signals = {}) {
   return SIGNALS.filter(({ key }) => key === "listItem" ? Boolean(signals[key]) : Number(signals[key]) > 0);
 }
 
-export function buildCumulativeCurve(clauses = []) {
-  const ranked = clauses
-    .filter((clause) => Number.isFinite(clause.explainability))
+export function buildCumulativeCurve(blocks = []) {
+  const ranked = blocks
+    .filter((block) => Number.isFinite(block.score?.finalScore))
     .slice()
-    .sort((a, b) => b.explainability - a.explainability || a.clauseIndex - b.clauseIndex);
-  const total = ranked.reduce((sum, clause) => sum + Math.max(0, clause.explainability), 0);
+    .sort((a, b) => b.score.finalScore - a.score.finalScore || a.index - b.index);
+  const total = ranked.reduce((sum, block) => sum + Math.max(0, block.score.finalScore), 0);
   let cumulative = 0;
-  return ranked.map((clause, index) => {
-    cumulative += Math.max(0, clause.explainability);
+  return ranked.map((block, index) => {
+    cumulative += Math.max(0, block.score.finalScore);
     return {
       rank: index + 1,
-      clauseIndex: clause.clauseIndex,
-      selected: clause.selected,
+      blockIndex: block.index,
+      selected: block.decision !== "omit",
       cumulativeShare: total > 0 ? cumulative / total : 0
     };
   });

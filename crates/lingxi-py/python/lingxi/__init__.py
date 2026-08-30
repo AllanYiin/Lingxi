@@ -16,10 +16,14 @@ from pathlib import Path
 
 from collections.abc import Iterable, Mapping
 
-from ._core import AnnotatedToken, Clause, Keyphrase, Segmenter, Sentence, SummarySentence, Token
+from ._core import (
+    AnnotatedToken, Clause, Keyphrase, Segmenter, Sentence, SummaryBlock,
+    SummaryBudget, SummaryDocument, SummaryScore, SummarySignals, Token,
+)
 
 __all__ = [
-    "AnnotatedToken", "Clause", "Keyphrase", "Segmenter", "Sentence", "SummarySentence", "Token",
+    "AnnotatedToken", "Clause", "Keyphrase", "Segmenter", "Sentence", "SummaryBlock",
+    "SummaryBudget", "SummaryDocument", "SummaryScore", "SummarySignals", "Token",
     "load", "cut", "tokenize", "annotate", "cut_batch", "extract_keywords",
     "split_sentences", "split_clauses", "extract_summary", "extract_keyphrases",
 ]
@@ -116,9 +120,9 @@ def split_clauses(text: str, **options) -> list[Clause]:
     return _default_segmenter().split_clauses(text, **options)
 
 
-def extract_summary(text: str, top_k: int = 3, **options) -> list[SummarySentence]:
-    """惰性單例版 TextRank 抽取式摘要。"""
-    return _default_segmenter().extract_summary(text, top_k, **options)
+def extract_summary(text: str, max_blocks: int = 3, **options) -> SummaryDocument:
+    """惰性單例版 schema v2 結構感知摘要。"""
+    return _default_segmenter().extract_summary(text, max_blocks, **options)
 
 
 def extract_keyphrases(text: str, top_k: int = 10, **options) -> list[Keyphrase]:

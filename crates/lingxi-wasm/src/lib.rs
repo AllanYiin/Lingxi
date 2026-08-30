@@ -57,7 +57,7 @@ impl Segmenter {
             .map_err(|error| JsError::new(&error.to_string()))?;
         let bmes_model: lingxi_core::model::BmesModel = lingxi_core::model::decode_asset(bmes)
             .map_err(|error| JsError::new(&error.to_string()))?;
-        let pos_model: lingxi_core::model::PosModel = lingxi_core::model::decode_asset(pos)
+        let pos_model: lingxi_core::model::PosModel = lingxi_core::model::decode_pos_asset(pos)
             .map_err(|error| JsError::new(&error.to_string()))?;
         let entries = user_dict
             .map(|text| lingxi_core::parse_user_dict(&text))
@@ -82,7 +82,7 @@ impl Segmenter {
             .map_err(|error| JsError::new(&error.to_string()))?;
         let bmes_model: lingxi_core::model::BmesModel = lingxi_core::model::decode_asset(bmes)
             .map_err(|error| JsError::new(&error.to_string()))?;
-        let pos_model: lingxi_core::model::PosModel = lingxi_core::model::decode_asset(pos)
+        let pos_model: lingxi_core::model::PosModel = lingxi_core::model::decode_pos_asset(pos)
             .map_err(|error| JsError::new(&error.to_string()))?;
         let affect_model = affect
             .as_deref()
@@ -269,64 +269,11 @@ impl Segmenter {
         serde_wasm_bindgen::to_value(&out).map_err(|error| JsError::new(&error.to_string()))
     }
 
-    /// TextRank 抽取式摘要 → [{text, start, end, index, weight}]。
+    /// schema v2 結構感知摘要。
     #[wasm_bindgen(js_name = extractSummary)]
-    pub fn extract_summary(&self, text: &str, top_k: usize) -> Result<JsValue, JsError> {
-        #[derive(Serialize)]
-        #[serde(rename_all = "camelCase")]
-        struct JsSummarySentence {
-            text: String,
-            start: u32,
-            end: u32,
-            index: usize,
-            clause_index: usize,
-            weight: f32,
-            explainability: f32,
-            novelty: f32,
-            coverage_gain: f32,
-            signals: JsSummarySignals,
-        }
-        #[derive(Serialize)]
-        #[serde(rename_all = "camelCase")]
-        struct JsSummarySignals {
-            proper_noun_count: usize,
-            negation_count: usize,
-            emphasis_count: usize,
-            list_item: bool,
-            object_name_count: usize,
-            date_count: usize,
-            number_count: usize,
-            quantity_count: usize,
-            acronym_count: usize,
-        }
-        let out: Vec<JsSummarySentence> = self
-            .inner
-            .extract_summary(text, top_k)
-            .into_iter()
-            .map(|sentence| JsSummarySentence {
-                start: utf16_len(&text[..sentence.byte_start]) as u32,
-                end: utf16_len(&text[..sentence.byte_end]) as u32,
-                index: sentence.sentence_index,
-                clause_index: sentence.clause_index,
-                text: sentence.text,
-                weight: sentence.weight,
-                explainability: sentence.explainability,
-                novelty: sentence.novelty,
-                coverage_gain: sentence.coverage_gain,
-                signals: JsSummarySignals {
-                    proper_noun_count: sentence.signals.proper_noun_count,
-                    negation_count: sentence.signals.negation_count,
-                    emphasis_count: sentence.signals.emphasis_count,
-                    list_item: sentence.signals.list_item,
-                    object_name_count: sentence.signals.object_name_count,
-                    date_count: sentence.signals.date_count,
-                    number_count: sentence.signals.number_count,
-                    quantity_count: sentence.signals.quantity_count,
-                    acronym_count: sentence.signals.acronym_count,
-                },
-            })
-            .collect();
-        serde_wasm_bindgen::to_value(&out).map_err(|error| JsError::new(&error.to_string()))
+    pub fn extract_summary(&self, text: &str, max_blocks: usize) -> Result<JsValue, JsError> {
+        let document = self.inner.extract_summary(text, max_blocks);
+        serde_wasm_bindgen::to_value(&document).map_err(|error| JsError::new(&error.to_string()))
     }
 
     /// 相鄰關鍵短語 → [{phrase, weight, occurrences, spans}]。

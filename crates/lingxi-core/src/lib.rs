@@ -43,13 +43,19 @@ pub use sentence::{
     split_sentences, split_sentences_with_options, SentenceSpan, SentenceSplitOptions,
 };
 pub use summary::{
-    should_preserve_structured_markdown, SentenceSimilarity, SummaryOptions, SummarySentence,
-    SummarySignals,
+    SelectedSpan, SentenceSimilarity, SignalKind, SignalSpan, SummaryBlock, SummaryBlockKind,
+    SummaryBudget, SummaryDecision, SummaryDocument, SummaryOptions, SummaryScore, SummarySignals,
 };
 pub use userdict::{parse_user_dict, UserDictEntry};
 
 /// 全量模型之外、由回歸測試確認的少量穩定邊界覆寫。
 const CURATED_DICTIONARY: &str = include_str!("curated_dict.txt");
+
+/// 現行模型仍可能以更長詞跨過的少量人工核准詞界。
+///
+/// 這些詞先成為 anchor，再讓兩側各自走 DAG；頻率只負責 POS fallback，
+/// 不再依模型總詞頻碰運氣。混合 ASCII/Han 詞仍沿用相同 anchor 管線。
+const CURATED_BOUNDARY_ANCHORS: &[&str] = &["行政院", "生命", "擺攤"];
 
 /// 帶詞性的分詞結果：原始輸入的 byte 區間 + 統一詞性表的 tag id。
 /// 詞字串由呼叫端以 `&text[byte_start..byte_end]` 取得（零拷貝），
@@ -148,6 +154,11 @@ fn load_asset<T: serde::de::DeserializeOwned>(path: &Path) -> Result<T, LoadErro
     model::decode_asset(&bytes).map_err(LoadError::Asset)
 }
 
+fn load_pos_asset(path: &Path) -> Result<model::PosModel, LoadError> {
+    let bytes = std::fs::read(path).map_err(LoadError::Io)?;
+    model::decode_pos_asset(&bytes).map_err(LoadError::Asset)
+}
+
 fn load_optional_asset<T: serde::de::DeserializeOwned>(
     path: &Path,
 ) -> Result<Option<T>, LoadError> {
@@ -174,7 +185,7 @@ impl Segmenter {
         Self::from_models_with_all(
             load_asset(&dir.join("dict.bin"))?,
             load_asset(&dir.join("hmm_bmes.bin"))?,
-            load_asset(&dir.join("hmm_pos.bin"))?,
+            load_pos_asset(&dir.join("hmm_pos.bin"))?,
             load_optional_asset(&dir.join("affect.bin"))?,
             user_entries,
             SegmenterOptions::default(),
@@ -190,7 +201,7 @@ impl Segmenter {
         Self::from_models_with_all(
             load_asset(&dir.join("dict.bin"))?,
             load_asset(&dir.join("hmm_bmes.bin"))?,
-            load_asset(&dir.join("hmm_pos.bin"))?,
+            load_pos_asset(&dir.join("hmm_pos.bin"))?,
             load_optional_asset(&dir.join("affect.bin"))?,
             user_entries,
             options,
@@ -205,7 +216,7 @@ impl Segmenter {
         Self::from_models_with_all(
             load_asset(&dir.join("dict.bin"))?,
             load_asset(&dir.join("hmm_bmes.bin"))?,
-            load_asset(&dir.join("hmm_pos.bin"))?,
+            load_pos_asset(&dir.join("hmm_pos.bin"))?,
             load_optional_asset(&dir.join("affect.bin"))?,
             &[],
             options,
@@ -440,8 +451,8 @@ impl Segmenter {
         };
         let mut trace = Vec::new();
 
-        // 先保護跨 ASCII/Han 邊界的詞典詞，其餘區段再走一般 pre hooks。
-        let anchors = self.mixed_dict_anchors(normalized);
+        // 先保護跨 ASCII/Han 詞與少量人工核准詞界，其餘區段再走 pre hooks。
+        let anchors = self.protected_dict_anchors(normalized);
         let mut cursor = 0usize;
         for anchor in anchors {
             self.cut_range(
@@ -478,8 +489,8 @@ impl Segmenter {
         (out, trace)
     }
 
-    /// 找出跨 ASCII/Han 邊界的詞典詞，採左至右最長匹配並以機率破同長平手。
-    fn mixed_dict_anchors(&self, normalized: &str) -> Vec<Segment> {
+    /// 找出跨 ASCII/Han 或人工核准的詞典詞，採左至右最長匹配並以機率破平手。
+    fn protected_dict_anchors(&self, normalized: &str) -> Vec<Segment> {
         let mut candidates: Vec<(usize, usize, u32, f32)> = self
             .dict
             .matches(normalized)
@@ -487,7 +498,7 @@ impl Segmenter {
                 let word = &normalized[m.byte_start..m.byte_end];
                 let has_ascii = word.chars().any(|c| c.is_ascii_alphanumeric());
                 let has_han = word.chars().any(chunk::is_han_char);
-                (has_ascii && has_han).then(|| {
+                ((has_ascii && has_han) || CURATED_BOUNDARY_ANCHORS.contains(&word)).then(|| {
                     (
                         m.byte_start,
                         m.byte_end,

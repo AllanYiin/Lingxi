@@ -12,7 +12,7 @@ fn load() -> Option<Segmenter> {
     if !std::path::Path::new(dir).join("dict.bin").exists() {
         return None;
     }
-    Some(Segmenter::from_asset_dir(dir).expect("assets 存在但不是有效 LXA2 模型"))
+    Some(Segmenter::from_asset_dir(dir).expect("assets 存在但不是有效 LingXi 模型"))
 }
 
 #[test]

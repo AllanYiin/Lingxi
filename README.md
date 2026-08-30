@@ -5,7 +5,7 @@
 LingXi 是以 Rust 重寫的繁體中文（台灣語料）分詞與詞性標註引擎。專案以單一核心提供 CLI、Python、WASM/JavaScript 與 C ABI，並支援自訂詞典、TextRank 關鍵字／關鍵短語及抽取式摘要。
 
 > [!IMPORTANT]
-> 此 repository 目前只適合公開原始碼。執行完整分詞所需的本機模型不隨 repository 發布；現有模型組合至少包含不可公開再散布的語料衍生資產。請勿提交 `assets/*.bin`、wheel、WASM bundle 或 `dist/` 內部交付包。詳見 [ASSETS.md](ASSETS.md)。
+> 現行模型由維護者自有文本、中研院分詞結果與人工校閱建立；與 [ASSETS.md](ASSETS.md) 核准雜湊吻合的版本可隨 binding、網站與 release 散布。舊版或來源／雜湊未經確認的模型仍不得發布。
 
 ## 功能
 
@@ -18,7 +18,7 @@ LingXi 是以 Rust 重寫的繁體中文（台灣語料）分詞與詞性標註�
 - 獨立情感 taxonomy 與詞級多標籤 `annotate`（不做句級情緒推論）
 - TextRank 關鍵字抽取
 - 中文句界與原文 offset
-- TextRank 抽取式摘要（BM25／詞面相似度、去冗餘）
+- schema v2 結構感知摘要（block-first、BM25／詞面相似度、去冗餘）
 - 相鄰關鍵詞組成的關鍵短語
 - CLI、Python、WASM/JavaScript、C ABI 四種介面
 
@@ -50,7 +50,7 @@ assets/
 └── affect.bin       # 可選；缺少時 annotate 的 affect 為空
 ```
 
-這些檔案目前不在公開 repository 中。若你是內部維護者，請依 [ASSETS.md](ASSETS.md) 的規則準備本機資產；一般貢獻者不需要模型也能修改及測試純核心邏輯。
+模型是否隨 repository 或 release 提供，以 [ASSETS.md](ASSETS.md) 的 provenance 與核准雜湊為準；一般貢獻者不需要模型也能修改及測試純核心邏輯。`hmm_pos.bin` 預設為 LXA3 i16 定點量化格式，runtime 仍可讀取既有 LXA2 f32 POS 資產。
 
 ## Usage｜使用方式
 
@@ -68,8 +68,8 @@ echo "搭板南線後感到欣慰" | ./target/release/lingxi \
   --format annotated-json
 
 # 文件分析模式互斥；摘要／短語／斷句／子句輸出 JSONL。
-# 摘要數字是一般輸出的硬上限；密集 Markdown 完整保留模式是唯一例外。
-# 密集 Markdown 重點筆記會完整保留，不再二次簡化。
+# 摘要數字是 paragraph／blockquote 的最大 block 數；code、list、table、HTML 不計入。
+# 長段落與長清單項才進行 block 內 clause 摘要。
 lingxi --summary 10 --min-explainability 0.35 article.txt
 lingxi --keyphrases 10 --stopwords stopwords.txt article.txt
 lingxi --sentences article.txt
@@ -125,7 +125,7 @@ seg.split_sentences("第一句。第二句！")
 seg.split_clauses("結論（含條件，不拆開），但不得省略。")
 seg.extract_summary(
     "要摘要的多句長文本",
-    top_k=10,  # 一般摘要輸出的硬上限
+    max_blocks=10,  # 可排名的 paragraph／blockquote 上限
     similarity="bm25",
     min_explainability=0.35,
 )
@@ -140,6 +140,12 @@ WASM binding 位於 `crates/lingxi-wasm`，模型由 JavaScript 載入後傳入�
 ```bash
 cd crates/lingxi-wasm
 wasm-pack build --release --target web
+```
+
+既有 LXA2 POS 資產可離線量化為 LXA3：
+
+```bash
+cargo run -p lingxi-convert -- --quantize-pos assets/hmm_pos.lxa2.bin assets/hmm_pos.bin
 ```
 
 C ABI 位於 `crates/lingxi-ffi`，公開標頭為 `crates/lingxi-ffi/include/lingxi.h`：

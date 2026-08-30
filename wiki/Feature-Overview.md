@@ -90,9 +90,9 @@ LingXi 先進行分詞與詞性標註，再篩選候選詞，使用寬度為 5 �
 
 ## 8. TextRank 抽取式摘要
 
-摘要必定先做結構感知子句抽取，再以 LingXi 分詞及 CKIP 詞性建立內容詞向量。候選會標記專有名詞、否定詞、括號／引號／Markdown 粗體、條列項目、函數／工具等物件名、日期、數字、帶單位數值與全大寫縮略語；`不只`／`不僅`／`非常`／`是否` 明確排除於否定訊號之外。定義句與「先…再…」處置鏈會保留為完整語意單位。句子相似度支援對稱 BM25（預設）與詞頻 cosine；選句時綜合相關性、覆蓋增益、新穎性與訊號，並以詞彙及有限規則型語意重疊門檻降低重複。
+0.4 起摘要先建立文件 block tree，再分別處理 paragraph、heading、code、list、blockquote、table 與 HTML。Code、table、HTML 及短清單項完整保留；長段落與長清單項才做 clause 內抽取。一般 paragraph／blockquote 使用對稱 BM25（預設）或 cosine 建圖，依相關性 50%、新增覆蓋 25%、新穎性 15% 與 portable signal 10% 選取。
 
-`top_k` 是一般摘要的硬上限；條列、非日期帶單位數值與括號內縮略語可略過一般門檻，但仍在上限內競爭。一般候選使用 0 到 1 的絕對 `explainability` 分數，預設門檻為 `0.35`；分數由相關性 45%、新增覆蓋 20%、新穎性 10% 與上述可辨識訊號覆蓋 25% 組成。它不是「相較前一句增加 15%」之類的固定邊際比例。若 Markdown 標題與條列已占主要內容，則判定為已壓縮的結構化筆記並完整保留，這是唯一可超過 `top_k` 的模式。輸出會帶回各分項與訊號，讓納入理由可以檢查。
+`max_blocks` 只限制可排名的 paragraph／blockquote。專名、金額、日期、數量、裸數字、縮略語與物件名皆為有界軟加權，不得繞過門檻；受保護結構與已入選容器內的有效否定 clause 可超過局部預算，原因會列在 `SummaryBudget`。中文 `非常／是否／未來／否則` 與英文 `not only／whether or not／otherwise` 明確排除於否定訊號之外。輸出為 schema v2 `SummaryDocument`，保留每個 block 的原文 byte range、decision、signals、score 與選取 spans。
 
 ## 9. 共用核心、多種整合介面
 
@@ -108,7 +108,7 @@ LingXi 先進行分詞與詞性標註，再篩選候選詞，使用寬度為 5 �
 
 ## 已知限制與部署界線
 
-- 完整執行至少需要 `dict.bin`、`hmm_bmes.bin`、`hmm_pos.bin`；目前不隨原始碼 repository 發布。
+- 完整執行至少需要 `dict.bin`、`hmm_bmes.bin`、`hmm_pos.bin`；與 `ASSETS.md` 核准雜湊吻合的現行模型可散布，POS 預設採 LXA3 i16 定點量化格式。
 - `affect.bin` 是可選資產，缺少時不影響分詞、詞性與關鍵字功能。
 - 模型與語料授權和 MIT 原始碼授權分開管理，不可因程式碼可公開就推定模型可再散布。
 - 關鍵字權重是文件內的相對排序訊號，不是跨文件可直接比較的絕對機率。

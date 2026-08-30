@@ -94,8 +94,7 @@ pub(crate) fn requires_following_clause(candidate: &str, boundary: char) -> bool
             .iter()
             .any(|marker| content.contains(marker));
     let ordered_sequence = content.match_indices('先').any(|(index, _)| {
-        !content[index + '先'.len_utf8()..]
-            .starts_with(|next| matches!(next, '生' | '進' | '前' | '祖'))
+        !content[index + '先'.len_utf8()..].starts_with(['生', '進', '前', '祖'])
     });
     correlative || dependent_prefix || quantitative_condition || definition || ordered_sequence
 }

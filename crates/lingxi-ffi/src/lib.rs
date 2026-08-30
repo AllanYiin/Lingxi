@@ -352,7 +352,7 @@ pub unsafe extern "C" fn lingxi_split_clauses_json(
     json_utf8(&serde_json::Value::Array(value))
 }
 
-/// TextRank 抽取式摘要 JSON；使用 core 預設選項。
+/// schema v2 結構感知摘要 JSON；使用 core 預設選項。
 ///
 /// # Safety
 /// h 必須為有效 handle；utf8 在長度非零時必須指向有效 UTF-8 緩衝。
@@ -361,7 +361,7 @@ pub unsafe extern "C" fn lingxi_extract_summary_json(
     h: *const LingxiHandle,
     utf8: *const u8,
     len: usize,
-    top_k: usize,
+    max_blocks: usize,
 ) -> *mut LingxiUtf8 {
     if h.is_null() {
         return std::ptr::null_mut();
@@ -370,36 +370,10 @@ pub unsafe extern "C" fn lingxi_extract_summary_json(
         return std::ptr::null_mut();
     };
     let handle = &*h;
-    let value: Vec<_> = handle
-        .seg
-        .extract_summary(text, top_k)
-        .into_iter()
-        .map(|sentence| {
-            serde_json::json!({
-                "text": sentence.text,
-                "byteStart": sentence.byte_start,
-                "byteEnd": sentence.byte_end,
-                "index": sentence.sentence_index,
-                "clauseIndex": sentence.clause_index,
-                "weight": sentence.weight,
-                "explainability": sentence.explainability,
-                "novelty": sentence.novelty,
-                "coverageGain": sentence.coverage_gain,
-                "signals": {
-                    "properNounCount": sentence.signals.proper_noun_count,
-                    "negationCount": sentence.signals.negation_count,
-                    "emphasisCount": sentence.signals.emphasis_count,
-                    "listItem": sentence.signals.list_item,
-                    "objectNameCount": sentence.signals.object_name_count,
-                    "dateCount": sentence.signals.date_count,
-                    "numberCount": sentence.signals.number_count,
-                    "quantityCount": sentence.signals.quantity_count,
-                    "acronymCount": sentence.signals.acronym_count,
-                },
-            })
-        })
-        .collect();
-    json_utf8(&serde_json::Value::Array(value))
+    let value = serde_json::to_value(handle.seg.extract_summary(text, max_blocks)).unwrap_or_else(
+        |_| serde_json::json!({"schemaVersion": 2, "error": "serialization failed"}),
+    );
+    json_utf8(&value)
 }
 
 /// 相鄰關鍵短語 JSON；使用 core 預設選項。

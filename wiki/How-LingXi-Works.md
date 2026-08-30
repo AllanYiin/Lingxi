@@ -120,19 +120,19 @@ POS 模型仍保留句首、一階與二階跨詞轉移，所以能利用整句�
 
 `extract_keyphrases` 先使用可配置 TextRank 取得候選關鍵詞，再依原文 token 相鄰關係組成短語，聚合同一正規化短語的出現次數與原文 byte spans。這是統計式關鍵短語，不等同完整的術語或實體辨識。
 
-`extract_summary` 必定先抽取子句。逗號、分號與冒號可形成子句界，但括號、引號、反引號、Markdown `**粗體**`、數字千分位、尚待後果的條件前件、定義句與「先…再…」處置鏈受到保護；換行條列則各自保留句域。接著以 LingXi 分詞及 CKIP 詞性建立內容詞向量，子句圖可使用對稱 BM25（預設）或詞頻 cosine，相似度作為邊權重並執行 TextRank。
+`extract_summary` 先以線性掃描建立文件 block tree，識別段落、標題、fenced／indented code、巢狀清單、引用、表格、HTML 與分隔線。Code、table、HTML 原文保留；清單每一項都輸出，只有超過 3 clauses 且大於 240 字元或 60 英文詞時才做項內摘要。Paragraph／blockquote 先參與全文件排名，短 block 入選後完整輸出，長 block 再執行 clause 內抽取。
 
-每個候選另標記九類可直接說明的訊號：`Nb`／`Nc` 專有名詞、否定詞、強調格式、條列項目、反引號／函數呼叫／dotted name 等函數或工具物件名、日期、數字、帶單位數值與全大寫縮略語。`不只`／`不僅`、`非常`、`是否` 不計為否定；縮略語若同時位於括號或引號等強調結構中，視為定義性內容。候選可解釋性分數為：
+跨端共同規則標記專名、否定、強調、條列、物件名、日期、數字、數量、金額與縮略語；Rust POS 專名只作診斷，不改變選取。候選分數為：
 
 ```text
-explainability
-  = 0.45 × TextRank relevance
-  + 0.20 × marginal coverage gain
-  + 0.10 × lexical novelty
-  + 0.25 × recognized-signal coverage
+final score
+  = 0.50 × TextRank relevance
+  + 0.25 × marginal coverage gain
+  + 0.15 × lexical novelty
+  + 0.10 × portable signal score
 ```
 
-`top_k` 是一般摘要的硬上限；低於 `min_explainability`（預設 `0.35`）的一般候選不納入，也不為湊滿數量而回填。條列、非日期的帶單位數值，以及括號或引號中的全大寫縮略語可略過門檻，但仍須在預算內競爭；日期與裸數字只提供軟加權。密集 Markdown 完整保留模式是唯一可超過 `top_k` 的例外。選取會逐步綜合 TextRank 相關性、尚未覆蓋內容、新穎性與可辨識訊號，而不是先固定排名再截斷；最後預設依原文順序輸出。每個結果均保留原文、byte offset、句序、子句序、權重、各分項與訊號；它是抽取式摘要，不會改寫或生成句子。
+`max_blocks` 是可排名 paragraph／blockquote 的上限；所有重點詞皆為軟加權。只有 code/list/table/HTML 完整保留與已入選容器的有效否定語意閉包可超額，並由 `budget.overflowReasons` 說明。結果為 schema v2 `SummaryDocument`，依原文順序輸出，不生成新句或補寫標點。
 
 ## 10. 一個核心如何服務多個介面
 

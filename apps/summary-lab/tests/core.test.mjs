@@ -5,18 +5,18 @@ import { activeSignals, buildCumulativeCurve, curvePath, reductionLabel } from "
 import { buildCliArgs, validateAnalyzePayload } from "../server.mjs";
 
 test("payload validation keeps deterministic summary settings bounded", () => {
-  assert.deepEqual(validateAnalyzePayload({ text: "測試內容", maxClauses: 8, minExplainability: 0.4 }), {
+  assert.deepEqual(validateAnalyzePayload({ text: "測試內容", maxBlocks: 8, minExplainability: 0.4 }), {
     text: "測試內容",
-    maxClauses: 8,
+    maxBlocks: 8,
     minExplainability: 0.4
   });
-  assert.throws(() => validateAnalyzePayload({ text: " ", maxClauses: 8 }), /填入/);
+  assert.throws(() => validateAnalyzePayload({ text: " ", maxBlocks: 8 }), /填入/);
   assert.throws(() => validateAnalyzePayload({ text: "內容", minExplainability: 1.2 }), /0 到 1/);
 });
 
 test("CLI args only invoke local summary report mode", () => {
   assert.deepEqual(
-    buildCliArgs({ maxClauses: 12, minExplainability: 0.35 }, "D:/assets"),
+    buildCliArgs({ maxBlocks: 12, minExplainability: 0.35 }, "D:/assets"),
     ["--assets", "D:/assets", "--summary-report", "12", "--min-explainability", "0.35"]
   );
 });
@@ -43,9 +43,9 @@ test("signals are explicit labels rather than color-only state", () => {
 
 test("cumulative curve is monotonic and reaches one", () => {
   const points = buildCumulativeCurve([
-    { clauseIndex: 0, explainability: 0.2, selected: false },
-    { clauseIndex: 1, explainability: 0.8, selected: true },
-    { clauseIndex: 2, explainability: 0.5, selected: true }
+    { index: 0, decision: "omit", score: { finalScore: 0.2 } },
+    { index: 1, decision: "select_exact", score: { finalScore: 0.8 } },
+    { index: 2, decision: "select_exact", score: { finalScore: 0.5 } }
   ]);
   assert.equal(points.length, 3);
   assert.ok(points[1].cumulativeShare >= points[0].cumulativeShare);

@@ -1,5 +1,9 @@
 # Summary Lab 一鍵交付 TODO
 
+- [x] 升級 schema v2 結構感知摘要、`maxBlocks` 與 block diagnostics
+- [x] 同步 Rust／CLI／bindings／Summary Lab／summary-site golden fixtures
+- [x] 新增中英文訊號、否定誤判與 preserve-first 預算回歸
+
 - [x] 整理使用情境、APSM 與一鍵啟動需求
 - [x] 建立 `project.config.json`、`specs/requirements.md` 與 app-local `AGENTS.md`
 - [x] 導入 skill 的 `project_launcher.py` 與 `apsm_validate.py`
@@ -17,7 +21,7 @@
 - [x] 新增全大寫縮略語與括號內定義偵測
 - [x] 同步縮略語報告欄位、bindings 與 UI 色標
 - [x] 以 `Fear Of Missing Out（FOMO）` 完成核心、CLI 與畫面驗證
-- [x] 將 `maxClauses` 改為一般摘要硬上限，日期與裸數字降為軟訊號
+- [x] 將舊 `maxClauses` 規則遷移為 schema v2 `maxBlocks`，日期與裸數字維持軟訊號
 - [x] 保留完整定義與「先…再…」處置鏈，避免懸空子句
 - [x] 修正 `非常`／`是否` 等否定訊號誤判
 - [x] 讓覆蓋增益與新穎性實際參與逐步選句

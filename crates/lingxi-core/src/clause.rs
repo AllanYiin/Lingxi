@@ -202,8 +202,7 @@ fn is_list_item_prefix(text: &str) -> bool {
         .chars()
         .take_while(|ch| ch.is_ascii_digit() || "一二三四五六七八九十".contains(*ch))
         .collect::<String>();
-    !prefix.is_empty()
-        && text[prefix.len()..].starts_with(|ch| matches!(ch, '.' | ')' | '）' | '、'))
+    !prefix.is_empty() && text[prefix.len()..].starts_with(['.', ')', '）', '、'])
 }
 
 #[cfg(test)]

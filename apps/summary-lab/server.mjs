@@ -39,23 +39,23 @@ export function validateAnalyzePayload(value) {
   if (!text.trim()) throw new Error("請先填入要測試的內容");
   if (Buffer.byteLength(text, "utf8") > maxBodyBytes) throw new Error("內容超過 2 MB 上限");
 
-  const maxClauses = Number(value.maxClauses ?? 12);
+  const maxBlocks = Number(value.maxBlocks ?? 12);
   const minExplainability = Number(value.minExplainability ?? 0.35);
-  if (!Number.isInteger(maxClauses) || maxClauses < 1 || maxClauses > 100) {
-    throw new Error("摘要子句上限必須是 1 到 100 的整數");
+  if (!Number.isInteger(maxBlocks) || maxBlocks < 1 || maxBlocks > 100) {
+    throw new Error("摘要段落上限必須是 1 到 100 的整數");
   }
   if (!Number.isFinite(minExplainability) || minExplainability < 0 || minExplainability > 1) {
     throw new Error("可解釋性門檻必須介於 0 到 1");
   }
-  return { text, maxClauses, minExplainability };
+  return { text, maxBlocks, minExplainability };
 }
 
-export function buildCliArgs({ maxClauses, minExplainability }, assetsDir) {
+export function buildCliArgs({ maxBlocks, minExplainability }, assetsDir) {
   return [
     "--assets",
     assetsDir,
     "--summary-report",
-    String(maxClauses),
+    String(maxBlocks),
     "--min-explainability",
     String(minExplainability)
   ];

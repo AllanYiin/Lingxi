@@ -2,8 +2,8 @@
 //! 資產不存在時跳過（同 golden.rs 慣例）。
 
 use lingxi_core::{
-    parse_user_dict, should_preserve_structured_markdown, KeywordExtractionOptions, KeywordOptions,
-    Segmenter, SummaryOptions,
+    parse_user_dict, KeywordExtractionOptions, KeywordOptions, Segmenter, SummaryDecision,
+    SummaryOptions,
 };
 
 const ASSET_DIR: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../assets");
@@ -123,12 +123,12 @@ fn configurable_keywords_honor_stopwords() {
 }
 
 #[test]
-fn summary_preserves_original_sentence_offsets() {
+fn summary_document_preserves_original_block_offsets() {
     let Ok(seg) = Segmenter::from_asset_dir(ASSET_DIR) else {
         eprintln!("assets 不存在，跳過");
         return;
     };
-    let text = "行政院今天通過中央政府總預算案。立法院下週將開始審議總預算案。氣象署表示颱風目前距離台灣很遠。朝野立委將討論國防與社福預算。";
+    let text = "行政院今天通過中央政府總預算案。\n\n立法院下週將開始審議總預算案。\n\n氣象署表示颱風目前距離台灣很遠。";
     let summary = seg.extract_summary_with_options(
         text,
         2,
@@ -137,23 +137,23 @@ fn summary_preserves_original_sentence_offsets() {
             ..SummaryOptions::default()
         },
     );
-    assert_eq!(summary.len(), 2);
-    assert!(summary
-        .windows(2)
-        .all(|items| { items[0].sentence_index < items[1].sentence_index }));
-    for sentence in summary {
-        assert_eq!(&text[sentence.byte_start..sentence.byte_end], sentence.text);
-        assert!(sentence.weight.is_finite());
+    assert_eq!(summary.schema_version, 2);
+    assert!(summary.budget.selected_ranked_blocks <= 2);
+    for block in &summary.blocks {
+        assert_eq!(&text[block.byte_start..block.byte_end], block.source_text);
+        if let Some(score) = &block.score {
+            assert!(score.final_score.is_finite());
+        }
     }
 }
 
 #[test]
-fn summary_extracts_clauses_and_uses_explainability_as_an_absolute_gate() {
+fn summary_uses_block_gate_and_reports_signals() {
     let Ok(seg) = Segmenter::from_asset_dir(ASSET_DIR) else {
         eprintln!("assets 不存在，跳過");
         return;
     };
-    let text = "部署流程已完成，但 **不得** 呼叫 `tools.delete_all()`；一般背景資料仍持續更新。其他團隊預計下週檢視結果。";
+    let text = "部署流程已完成，但 **不得** 呼叫 `tools.delete_all()`；一般背景資料仍持續更新。\n\n其他團隊預計下週檢視結果。";
     let explained = seg.extract_summary_with_options(
         text,
         10,
@@ -164,13 +164,14 @@ fn summary_extracts_clauses_and_uses_explainability_as_an_absolute_gate() {
         },
     );
     let protected = explained
+        .blocks
         .iter()
-        .find(|item| item.text.contains("delete_all"))
-        .expect("含否定、強調與工具名的子句應可獨立抽取");
+        .find(|item| item.source_text.contains("delete_all"))
+        .expect("含否定、強調與工具名的 block 應存在");
     assert!(protected.signals.negation_count > 0);
     assert!(protected.signals.emphasis_count > 0);
     assert!(protected.signals.object_name_count > 0);
-    assert!(protected.text.len() < text.len());
+    assert_ne!(protected.decision, SummaryDecision::Omit);
 
     let strict = seg.extract_summary_with_options(
         text,
@@ -181,7 +182,10 @@ fn summary_extracts_clauses_and_uses_explainability_as_an_absolute_gate() {
             ..SummaryOptions::default()
         },
     );
-    assert!(strict.is_empty(), "低於門檻者一律不納入，也不得保底回填");
+    assert!(
+        strict.text.is_empty(),
+        "低於門檻者一律不納入，也不得保底回填"
+    );
 }
 
 #[test]
@@ -272,7 +276,7 @@ fn structured_lexicon_is_frequency_free_and_affect_is_multi_label() {
     let seg = Segmenter::from_models_with_options(
         lingxi_core::model::decode_asset(&dict).unwrap(),
         lingxi_core::model::decode_asset(&bmes).unwrap(),
-        lingxi_core::model::decode_asset(&pos).unwrap(),
+        lingxi_core::model::decode_pos_asset(&pos).unwrap(),
         Some(affect),
         lingxi_core::SegmenterOptions {
             custom_lexicons: vec![custom],
@@ -312,132 +316,132 @@ fn structured_lexicon_is_frequency_free_and_affect_is_multi_label() {
 }
 
 #[test]
-fn dense_markdown_notes_are_preserved_even_when_top_k_is_small() {
+fn structural_blocks_are_preserved_outside_ranked_budget() {
     let Ok(seg) = Segmenter::from_asset_dir(ASSET_DIR) else {
         eprintln!("assets 不存在，跳過");
         return;
     };
-    let text = "# Token 節省手段清單\n\n## A. deterministic 減量\n1. **Canonical serialization**：固定欄位順序。\n2. **Exact content dedup**：去除重複規則。\n3. **Tool schema projection**：只暴露所需工具。\n4. **Path compaction**：縮短固定 prefix。";
-    assert!(should_preserve_structured_markdown(text));
-
-    let clauses = seg.split_clauses(text);
-    let summary = seg.extract_summary_with_options(
-        text,
-        1,
-        &SummaryOptions {
-            min_explainability: Some(0.99),
-            ..SummaryOptions::default()
-        },
-    );
-    assert_eq!(summary.len(), clauses.len());
-    assert_eq!(summary.first().unwrap().text, clauses.first().unwrap().text);
-    assert_eq!(summary.last().unwrap().text, clauses.last().unwrap().text);
+    let text = "# 重點\n\n一般背景。\n\n```rs\nfn main() {}\n```\n\n1. 第一項。\n2. 第二項。\n\n| A | B |\n|---|---|\n| 1 | 2 |";
+    let summary = seg.extract_summary_with_options(text, 0, &SummaryOptions::default());
+    assert!(summary.text.contains("fn main() {}"));
+    assert!(summary.text.contains("1. 第一項。"));
+    assert!(summary.text.contains("2. 第二項。"));
+    assert!(summary.text.contains("| A | B |"));
+    assert!(!summary.text.contains("一般背景。"));
+    assert!(summary.budget.preserved_blocks >= 4);
 }
 
 #[test]
-fn hard_fact_signals_obey_the_summary_budget() {
+fn ranked_blocks_obey_max_blocks_and_soft_facts_do_not_override_conclusion() {
     let Ok(seg) = Segmenter::from_asset_dir(ASSET_DIR) else {
         eprintln!("assets 不存在，跳過");
         return;
     };
-    let text = "一般背景敘述可以省略。\n- 第一個重要概念必須保留。\n- 第二個重要概念也必須保留。\n活動於2026-08-20開始，預算為30萬元，樣本共1,024人。";
-    let summary = seg.extract_summary_with_options(
-        text,
-        1,
-        &SummaryOptions {
-            min_explainability: Some(0.99),
-            ..SummaryOptions::default()
-        },
-    );
-    assert_eq!(summary.len(), 1, "一般摘要必須遵守 top_k 硬上限");
-    assert!(
-        summary[0].signals.list_item || summary[0].signals.quantity_count > 0,
-        "門檻豁免訊號仍應參與預算內競爭"
-    );
-}
-
-#[test]
-fn irrelevant_dates_do_not_displace_an_explicit_research_conclusion() {
-    let Ok(seg) = Segmenter::from_asset_dir(ASSET_DIR) else {
-        eprintln!("assets 不存在，跳過");
-        return;
-    };
-    let text = "版權頁記載本書出版於2024年。作者曾在2019年搬家。研究核心發現是睡眠品質與記憶鞏固密切相關。實驗指出規律作息有助提升學習表現。";
+    let text = "版權頁記載本書出版於2024年。\n\n作者曾在2019年搬家。\n\n研究核心發現是睡眠品質與記憶鞏固密切相關。";
     let summary = seg.extract_summary(text, 1);
-    assert_eq!(summary.len(), 1);
-    assert!(summary[0].text.contains("研究核心發現"), "{summary:?}");
+    assert_eq!(summary.budget.selected_ranked_blocks, 1);
+    assert!(summary.text.contains("研究核心發現"), "{summary:?}");
+    assert!(!summary.text.contains("2024年"));
 }
 
 #[test]
-fn discourse_markers_break_disconnected_graph_ties() {
+fn long_selected_block_forces_valid_negation_clauses() {
     let Ok(seg) = Segmenter::from_asset_dir(ASSET_DIR) else {
         eprintln!("assets 不存在，跳過");
         return;
     };
-    let text = "昨天傍晚公園裡有一隻橘貓在長椅旁曬太陽。研究結論指出規律運動能降低心血管疾病風險。政策建議包括每週安排中等強度活動並改善步行環境。";
-    let summary = seg.extract_summary(text, 1);
-    assert_eq!(summary.len(), 1);
-    assert!(summary[0].text.contains("研究結論"), "{summary:?}");
-}
-
-#[test]
-fn ordered_actions_are_not_emitted_as_dangling_clauses() {
-    let Ok(seg) = Segmenter::from_asset_dir(ASSET_DIR) else {
-        eprintln!("assets 不存在，跳過");
-        return;
-    };
-    let actions = "團隊決定先擴充容量，再修正記憶體洩漏問題，預計可恢復服務穩定性。";
-    let text = format!("伺服器在尖峰時段頻繁重啟。{actions}");
-    let summary = seg.extract_summary(&text, 2);
-    assert!(
-        summary.iter().any(|item| item.text == actions),
-        "{summary:?}"
+    let text = format!(
+        "{}。{}。不得把原文傳到外部服務。{}。不能刪除使用者資料。",
+        "背景資訊".repeat(90),
+        "系統已完成第一階段分析".repeat(20),
+        "其他說明".repeat(40),
     );
-    assert!(summary.iter().all(|item| !item.text.ends_with('，')));
-}
-
-#[test]
-fn quantified_sedentary_kidney_fact_suppresses_generic_duplicate() {
-    let Ok(seg) = Segmenter::from_asset_dir(ASSET_DIR) else {
-        eprintln!("assets 不存在，跳過");
-        return;
-    };
-    let generic = "坐太久不只會傷腎，嚴重時真的可能會致命。";
-    let quantified = "久坐者罹患慢性腎臟病的風險增加15%。";
-    let text = format!("{generic}{quantified}其他背景資訊可以略過。");
     let summary = seg.extract_summary_with_options(
         &text,
-        4,
+        1,
+        &SummaryOptions {
+            min_explainability: Some(0.0),
+            max_clauses_per_long_block: 1,
+            ..SummaryOptions::default()
+        },
+    );
+    assert!(summary.text.contains("不得把原文傳到外部服務"));
+    assert!(summary.text.contains("不能刪除使用者資料"));
+    assert!(summary.budget.forced_negation_clauses >= 1);
+}
+
+#[test]
+fn long_list_item_summarizes_prose_but_keeps_marker_and_negation() {
+    let Ok(seg) = Segmenter::from_asset_dir(ASSET_DIR) else {
+        eprintln!("assets 不存在，跳過");
+        return;
+    };
+    let text = format!(
+        "- {}。第一階段已完成。不得刪除使用者資料。最後才進行清理。",
+        "背景說明".repeat(70)
+    );
+    let summary = seg.extract_summary_with_options(
+        &text,
+        0,
+        &SummaryOptions {
+            max_clauses_per_long_list_item: 1,
+            ..SummaryOptions::default()
+        },
+    );
+    let block = &summary.blocks[0];
+    assert_eq!(
+        block.decision,
+        lingxi_core::SummaryDecision::SummarizeWithin
+    );
+    assert!(block.output_text.starts_with("- "));
+    assert!(block.output_text.contains("不得刪除使用者資料"));
+    assert!(block.output_text.len() < block.source_text.len());
+}
+
+#[test]
+fn summary_v2_matches_cross_runtime_golden_contract() {
+    let Ok(seg) = Segmenter::from_asset_dir(ASSET_DIR) else {
+        eprintln!("assets 不存在，跳過");
+        return;
+    };
+    let fixture: serde_json::Value =
+        serde_json::from_str(include_str!("../../../tests/golden/summary-v2.json")).unwrap();
+    let input = fixture["input"].as_str().unwrap();
+    let max_blocks = fixture["maxBlocks"].as_u64().unwrap() as usize;
+    let summary = seg.extract_summary_with_options(
+        input,
+        max_blocks,
         &SummaryOptions {
             min_explainability: Some(0.0),
             ..SummaryOptions::default()
         },
     );
-    assert!(summary.iter().any(|item| item.text == quantified));
-    assert!(summary.iter().all(|item| item.text != generic));
-}
-
-#[test]
-fn parenthesized_uppercase_acronym_survives_a_strict_gate() {
-    let Ok(seg) = Segmenter::from_asset_dir(ASSET_DIR) else {
-        eprintln!("assets 不存在，跳過");
-        return;
-    };
-    let text = "市場情緒快速變化。Fear Of Missing Out（FOMO）在投資市場，是看到別人賺錢而感到焦慮與恐慌。其他背景資訊可以省略。";
-    let summary = seg.extract_summary_with_options(
-        text,
-        1,
-        &SummaryOptions {
-            min_explainability: Some(0.99),
-            ..SummaryOptions::default()
-        },
-    );
-    let fomo = summary
+    assert_eq!(summary.text, fixture["expectedSummary"].as_str().unwrap());
+    let kinds: Vec<_> = summary
+        .blocks
         .iter()
-        .find(|item| item.text.contains("FOMO"))
-        .expect("括號內全大寫縮略語應略過一般門檻並在預算內優先入選");
-    assert_eq!(fomo.signals.acronym_count, 1);
-    assert_eq!(fomo.signals.emphasis_count, 1);
-    assert!(fomo.text.contains("看到別人賺錢"), "{fomo:?}");
-    assert!(fomo.text.ends_with("焦慮與恐慌。"), "{fomo:?}");
+        .map(|block| serde_json::to_value(block.kind).unwrap())
+        .collect();
+    let decisions: Vec<_> = summary
+        .blocks
+        .iter()
+        .map(|block| serde_json::to_value(block.decision).unwrap())
+        .collect();
+    let negations: Vec<_> = summary
+        .blocks
+        .iter()
+        .map(|block| block.signals.negation_count)
+        .collect();
+    let money: Vec<_> = summary
+        .blocks
+        .iter()
+        .map(|block| block.signals.money_count)
+        .collect();
+    assert_eq!(kinds, fixture["expectedKinds"].as_array().unwrap().clone());
+    assert_eq!(
+        decisions,
+        fixture["expectedDecisions"].as_array().unwrap().clone()
+    );
+    assert_eq!(negations, vec![0, 1, 0, 0]);
+    assert_eq!(money, vec![0, 0, 0, 1]);
 }

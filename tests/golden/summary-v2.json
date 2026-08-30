@@ -1,0 +1,10 @@
+{
+  "schemaVersion": 2,
+  "maxBlocks": 1,
+  "input": "# Notes\n\nResearch conclusion: Data must not leave.\n\n```ts\nconst x = 1;\n```\n\n- Keep USD 20.",
+  "expectedSummary": "# Notes\n\nResearch conclusion: Data must not leave.\n\n```ts\nconst x = 1;\n```\n\n- Keep USD 20.",
+  "expectedKinds": ["heading", "paragraph", "fenced-code", "unordered-list-item"],
+  "expectedDecisions": ["context_only", "select_exact", "preserve_exact", "preserve_exact"],
+  "expectedNegationCounts": [0, 1, 0, 0],
+  "expectedMoneyCounts": [0, 0, 0, 1]
+}

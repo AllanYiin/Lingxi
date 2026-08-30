@@ -45,19 +45,11 @@ struct Clause {
     list_item: bool,
 }
 
-/// 抽取式摘要句（Python 字元座標）。
 #[pyclass(frozen, get_all)]
-struct SummarySentence {
-    text: String,
-    start: usize,
-    end: usize,
-    index: usize,
-    clause_index: usize,
-    weight: f32,
-    explainability: f32,
-    novelty: f32,
-    coverage_gain: f32,
+#[derive(Clone)]
+struct SummarySignals {
     proper_noun_count: usize,
+    model_proper_noun_count: usize,
     negation_count: usize,
     emphasis_count: usize,
     list_item: bool,
@@ -65,7 +57,59 @@ struct SummarySentence {
     date_count: usize,
     number_count: usize,
     quantity_count: usize,
+    money_count: usize,
     acronym_count: usize,
+    spans: Vec<(String, String, usize, usize)>,
+}
+
+#[pyclass(frozen, get_all)]
+#[derive(Clone)]
+struct SummaryScore {
+    relevance: f32,
+    coverage_gain: f32,
+    novelty: f32,
+    signal: f32,
+    final_score: f32,
+}
+
+#[pyclass(frozen, get_all)]
+#[derive(Clone)]
+struct SummaryBlock {
+    index: usize,
+    kind: String,
+    byte_start: usize,
+    byte_end: usize,
+    depth: usize,
+    decision: String,
+    source_text: String,
+    output_text: String,
+    selected_spans: Vec<(String, usize, usize, bool)>,
+    signals: SummarySignals,
+    score: Option<SummaryScore>,
+    children: Vec<SummaryBlock>,
+}
+
+#[pyclass(frozen, get_all)]
+#[derive(Clone)]
+struct SummaryBudget {
+    requested_max_blocks: usize,
+    selected_ranked_blocks: usize,
+    preserved_blocks: usize,
+    forced_negation_clauses: usize,
+    actual_output_blocks: usize,
+    overflow_reasons: Vec<String>,
+}
+
+#[pyclass(frozen, get_all)]
+struct SummaryDocument {
+    schema_version: u32,
+    mode: String,
+    text: String,
+    blocks: Vec<SummaryBlock>,
+    budget: SummaryBudget,
+    input_chars: usize,
+    output_chars: usize,
+    reduction_percent: f32,
 }
 
 /// 關鍵短語及其原文位置（Python 字元座標）。
@@ -250,10 +294,10 @@ impl Segmenter {
             .collect()
     }
 
-    /// TextRank 抽取式摘要；回傳原句、位置、索引與權重。
+    /// schema v2 結構感知摘要。
     #[pyo3(signature = (
         text,
-        top_k=3,
+        max_blocks=3,
         min_sentence_chars=8,
         min_token_chars=1,
         stopwords=None,
@@ -261,15 +305,20 @@ impl Segmenter {
         preserve_order=true,
         redundancy_threshold=Some(0.8),
         min_explainability=Some(0.35),
-        comma_boundary=true,
-        semicolon_boundary=true,
-        colon_boundary=true
+        comma_boundary=false,
+        semicolon_boundary=false,
+        colon_boundary=false,
+        long_block_min_clauses=3,
+        long_block_min_chars=240,
+        long_block_min_words=60,
+        max_clauses_per_long_block=2,
+        max_clauses_per_long_list_item=2
     ))]
     #[allow(clippy::too_many_arguments)]
     fn extract_summary(
         &self,
         text: &str,
-        top_k: usize,
+        max_blocks: usize,
         min_sentence_chars: usize,
         min_token_chars: usize,
         stopwords: Option<Vec<String>>,
@@ -280,7 +329,12 @@ impl Segmenter {
         comma_boundary: bool,
         semicolon_boundary: bool,
         colon_boundary: bool,
-    ) -> PyResult<Vec<SummarySentence>> {
+        long_block_min_clauses: usize,
+        long_block_min_chars: usize,
+        long_block_min_words: usize,
+        max_clauses_per_long_block: usize,
+        max_clauses_per_long_list_item: usize,
+    ) -> PyResult<SummaryDocument> {
         let similarity = match similarity {
             "bm25" => lingxi_core::SentenceSimilarity::Bm25,
             "lexical" | "overlap" => lingxi_core::SentenceSimilarity::LexicalOverlap,
@@ -290,47 +344,29 @@ impl Segmenter {
                 )))
             }
         };
-        Ok(self
-            .inner
-            .extract_summary_with_options(
-                text,
-                top_k,
-                &lingxi_core::SummaryOptions {
-                    min_sentence_chars,
-                    min_token_chars,
-                    stopwords: stopwords.unwrap_or_default(),
-                    similarity,
-                    redundancy_threshold,
-                    min_explainability,
-                    preserve_original_order: preserve_order,
-                    comma_boundary,
-                    semicolon_boundary,
-                    colon_boundary,
-                    ..lingxi_core::SummaryOptions::default()
-                },
-            )
-            .into_iter()
-            .map(|sentence| SummarySentence {
-                start: byte_to_char(text, sentence.byte_start),
-                end: byte_to_char(text, sentence.byte_end),
-                index: sentence.sentence_index,
-                clause_index: sentence.clause_index,
-                text: sentence.text,
-                weight: sentence.weight,
-                explainability: sentence.explainability,
-                novelty: sentence.novelty,
-                coverage_gain: sentence.coverage_gain,
-                proper_noun_count: sentence.signals.proper_noun_count,
-                negation_count: sentence.signals.negation_count,
-                emphasis_count: sentence.signals.emphasis_count,
-                list_item: sentence.signals.list_item,
-                object_name_count: sentence.signals.object_name_count,
-                date_count: sentence.signals.date_count,
-                number_count: sentence.signals.number_count,
-                quantity_count: sentence.signals.quantity_count,
-                acronym_count: sentence.signals.acronym_count,
-            })
-            .collect())
+        let document = self.inner.extract_summary_with_options(
+            text,
+            max_blocks,
+            &lingxi_core::SummaryOptions {
+                min_sentence_chars,
+                min_token_chars,
+                stopwords: stopwords.unwrap_or_default(),
+                similarity,
+                redundancy_threshold,
+                min_explainability,
+                preserve_original_order: preserve_order,
+                comma_boundary,
+                semicolon_boundary,
+                colon_boundary,
+                long_block_min_clauses,
+                long_block_min_chars,
+                long_block_min_words,
+                max_clauses_per_long_block,
+                max_clauses_per_long_list_item,
+                ..lingxi_core::SummaryOptions::default()
+            },
+        );
+        Ok(to_python_summary(document))
     }
 
     /// 由相鄰高排名關鍵詞組成關鍵短語。
@@ -451,6 +487,126 @@ fn byte_to_char(text: &str, byte: usize) -> usize {
     text[..byte].chars().count()
 }
 
+fn to_python_summary(document: lingxi_core::SummaryDocument) -> SummaryDocument {
+    let blocks = document.blocks.into_iter().map(to_python_block).collect();
+    SummaryDocument {
+        schema_version: document.schema_version,
+        mode: document.mode,
+        text: document.text,
+        blocks,
+        budget: SummaryBudget {
+            requested_max_blocks: document.budget.requested_max_blocks,
+            selected_ranked_blocks: document.budget.selected_ranked_blocks,
+            preserved_blocks: document.budget.preserved_blocks,
+            forced_negation_clauses: document.budget.forced_negation_clauses,
+            actual_output_blocks: document.budget.actual_output_blocks,
+            overflow_reasons: document.budget.overflow_reasons,
+        },
+        input_chars: document.input_chars,
+        output_chars: document.output_chars,
+        reduction_percent: document.reduction_percent,
+    }
+}
+
+fn to_python_block(block: lingxi_core::SummaryBlock) -> SummaryBlock {
+    SummaryBlock {
+        index: block.index,
+        kind: summary_block_kind_name(block.kind).to_string(),
+        byte_start: block.byte_start,
+        byte_end: block.byte_end,
+        depth: block.depth,
+        decision: summary_decision_name(block.decision).to_string(),
+        source_text: block.source_text,
+        output_text: block.output_text,
+        selected_spans: block
+            .selected_spans
+            .into_iter()
+            .map(|span| {
+                (
+                    span.text,
+                    span.byte_start,
+                    span.byte_end,
+                    span.forced_by_negation,
+                )
+            })
+            .collect(),
+        signals: SummarySignals {
+            proper_noun_count: block.signals.proper_noun_count,
+            model_proper_noun_count: block.signals.model_proper_noun_count,
+            negation_count: block.signals.negation_count,
+            emphasis_count: block.signals.emphasis_count,
+            list_item: block.signals.list_item,
+            object_name_count: block.signals.object_name_count,
+            date_count: block.signals.date_count,
+            number_count: block.signals.number_count,
+            quantity_count: block.signals.quantity_count,
+            money_count: block.signals.money_count,
+            acronym_count: block.signals.acronym_count,
+            spans: block
+                .signals
+                .spans
+                .into_iter()
+                .map(|span| {
+                    (
+                        signal_kind_name(span.kind).to_string(),
+                        span.text,
+                        span.byte_start,
+                        span.byte_end,
+                    )
+                })
+                .collect(),
+        },
+        score: block.score.map(|score| SummaryScore {
+            relevance: score.relevance,
+            coverage_gain: score.coverage_gain,
+            novelty: score.novelty,
+            signal: score.signal,
+            final_score: score.final_score,
+        }),
+        children: block.children.into_iter().map(to_python_block).collect(),
+    }
+}
+
+fn summary_block_kind_name(value: lingxi_core::SummaryBlockKind) -> &'static str {
+    match value {
+        lingxi_core::SummaryBlockKind::Paragraph => "paragraph",
+        lingxi_core::SummaryBlockKind::Heading => "heading",
+        lingxi_core::SummaryBlockKind::FencedCode => "fenced-code",
+        lingxi_core::SummaryBlockKind::IndentedCode => "indented-code",
+        lingxi_core::SummaryBlockKind::OrderedListItem => "ordered-list-item",
+        lingxi_core::SummaryBlockKind::UnorderedListItem => "unordered-list-item",
+        lingxi_core::SummaryBlockKind::Blockquote => "blockquote",
+        lingxi_core::SummaryBlockKind::Table => "table",
+        lingxi_core::SummaryBlockKind::Html => "html",
+        lingxi_core::SummaryBlockKind::ThematicBreak => "thematic-break",
+    }
+}
+
+fn summary_decision_name(value: lingxi_core::SummaryDecision) -> &'static str {
+    match value {
+        lingxi_core::SummaryDecision::PreserveExact => "preserve_exact",
+        lingxi_core::SummaryDecision::SelectExact => "select_exact",
+        lingxi_core::SummaryDecision::SummarizeWithin => "summarize_within",
+        lingxi_core::SummaryDecision::ContextOnly => "context_only",
+        lingxi_core::SummaryDecision::Omit => "omit",
+    }
+}
+
+fn signal_kind_name(value: lingxi_core::SignalKind) -> &'static str {
+    match value {
+        lingxi_core::SignalKind::ProperNoun => "proper_noun",
+        lingxi_core::SignalKind::Negation => "negation",
+        lingxi_core::SignalKind::Emphasis => "emphasis",
+        lingxi_core::SignalKind::ListItem => "list_item",
+        lingxi_core::SignalKind::ObjectName => "object_name",
+        lingxi_core::SignalKind::Date => "date",
+        lingxi_core::SignalKind::Number => "number",
+        lingxi_core::SignalKind::Quantity => "quantity",
+        lingxi_core::SignalKind::Money => "money",
+        lingxi_core::SignalKind::Acronym => "acronym",
+    }
+}
+
 fn polarity_name(value: lingxi_core::Polarity) -> String {
     match value {
         lingxi_core::Polarity::Positive => "positive",
@@ -517,7 +673,11 @@ fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<AnnotatedToken>()?;
     m.add_class::<Sentence>()?;
     m.add_class::<Clause>()?;
-    m.add_class::<SummarySentence>()?;
+    m.add_class::<SummarySignals>()?;
+    m.add_class::<SummaryScore>()?;
+    m.add_class::<SummaryBlock>()?;
+    m.add_class::<SummaryBudget>()?;
+    m.add_class::<SummaryDocument>()?;
     m.add_class::<Keyphrase>()?;
     Ok(())
 }

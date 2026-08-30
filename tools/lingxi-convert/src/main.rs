@@ -2,6 +2,7 @@
 //!
 //! 用法（參數皆可省略，預設對應本 repo 的相對位置）：
 //!   lingxi-convert [model_dir] [out_dir] [affect_source_dir]
+//!   lingxi-convert --quantize-pos input_hmm_pos.bin output_hmm_pos.bin
 //!
 //! 輸出：out_dir/dict.bin、hmm_bmes.bin、hmm_pos.bin，並列印轉換統計
 //! 與機率 spot-check 供人工對照 JSON 原值。
@@ -14,7 +15,10 @@ use anyhow::{bail, Context, Result};
 use daachorse::CharwiseDoubleArrayAhoCorasick;
 use serde_json::Value;
 
-use lingxi_core::model::{encode_asset, BmesModel, CharTable, DictModel, PosModel, MIN_LOG};
+use lingxi_core::model::{
+    decode_pos_asset, encode_asset, encode_quantized_pos_asset, BmesModel, CharTable, DictModel,
+    PosModel, MIN_LOG,
+};
 use lingxi_core::{build_affect_model, parse_affect_lexicon, parse_taxonomy};
 
 /// BMES 狀態固定順序，與 lingxi_core::model 的 STATE_* 對齊。
@@ -66,6 +70,22 @@ fn validate_model_fingerprint(model_dir: &Path) -> Result<String> {
 }
 fn main() -> Result<()> {
     let args: Vec<String> = std::env::args().skip(1).collect();
+    if args.first().is_some_and(|value| value == "--quantize-pos") {
+        if args.len() != 3 {
+            bail!("用法: lingxi-convert --quantize-pos input_hmm_pos.bin output_hmm_pos.bin");
+        }
+        let input = fs::read(&args[1]).with_context(|| format!("讀取 {}", args[1]))?;
+        let model = decode_pos_asset(&input).context("解碼 POS asset")?;
+        let output = encode_quantized_pos_asset(&model);
+        fs::write(&args[2], &output).with_context(|| format!("寫入 {}", args[2]))?;
+        println!(
+            "[pos-quantize] {} -> {} bytes ({:.1}%)",
+            input.len(),
+            output.len(),
+            output.len() as f64 / input.len().max(1) as f64 * 100.0
+        );
+        return Ok(());
+    }
     let model_dir = args
         .first()
         .map(PathBuf::from)
@@ -89,7 +109,10 @@ fn main() -> Result<()> {
     let bmes = convert_bmes(&model_dir)?;
     fs::write(out_dir.join("hmm_bmes.bin"), encode_asset(&bmes))?;
     let pos = convert_pos(&model_dir)?;
-    fs::write(out_dir.join("hmm_pos.bin"), encode_asset(&pos))?;
+    fs::write(
+        out_dir.join("hmm_pos.bin"),
+        encode_quantized_pos_asset(&pos),
+    )?;
     let taxonomy_text = fs::read_to_string(affect_dir.join("emotion-taxonomy.json"))
         .context("讀取 emotion-taxonomy.json")?;
     let lexicon_text = fs::read_to_string(affect_dir.join("emotion-lexicon.json"))

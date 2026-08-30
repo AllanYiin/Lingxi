@@ -41,23 +41,21 @@ form.addEventListener("submit", async (event) => {
   if (!text.trim()) return;
   setRunning(true);
   errorMessage.hidden = true;
-  runStatus.textContent = "正在本機執行子句抽取、TextRank 與 tiktoken 計數……";
+  runStatus.textContent = "正在本機執行區塊解析、階層式排名與 tiktoken 計數……";
   try {
     const response = await fetch("/api/analyze", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         text,
-        maxClauses: Number(document.querySelector("#max-clauses").value),
+        maxBlocks: Number(document.querySelector("#max-blocks").value),
         minExplainability: Number(document.querySelector("#min-explainability").value)
       })
     });
     const report = await response.json();
     if (!response.ok) throw new Error(report.error || "本機分析失敗");
     renderReport(report);
-    runStatus.textContent = report.mode === "structured-markdown-preserve-all"
-      ? `完成：判定為高密度 Markdown 重點筆記，${report.clauseCount} 個子句全部保留。`
-      : `完成：拆成 ${report.clauseCount} 個子句，納入 ${report.output.selectedClauses} 個。`;
+    runStatus.textContent = `完成：拆成 ${report.blockCount} 個區塊，納入 ${report.output.selectedBlocks} 個排名段落；另完整保留 ${report.budget.preservedBlocks} 個結構區塊。`;
     results.hidden = false;
     results.scrollIntoView({ behavior: matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth", block: "start" });
   } catch (error) {
@@ -115,53 +113,47 @@ function renderReport(report) {
   document.querySelector("#elapsed-time").textContent = formatDuration(report.elapsedMs);
   document.querySelector("#engine-stamp").textContent = `${report.engine} / ${report.llmCalls} LLM / ${report.tokenizer}`;
   document.querySelector("#before-text").textContent = report.input.text;
-  document.querySelector("#clause-count").textContent = report.clauseCount;
-  document.querySelector("#selected-count").textContent = report.output.selectedClauses;
-  document.querySelector("#after-title").textContent = report.mode === "structured-markdown-preserve-all"
-    ? "結構化筆記（完整保留）"
-    : "最佳摘要";
+  document.querySelector("#block-count").textContent = report.blockCount;
+  document.querySelector("#selected-count").textContent = report.output.selectedBlocks;
+  document.querySelector("#after-title").textContent = "結構感知摘要";
   const afterRatio = report.input.tokens ? Math.min(100, report.output.tokens / report.input.tokens * 100) : 0;
   document.querySelector("#token-ruler-after").style.width = `${afterRatio}%`;
   renderSummary(report);
-  renderCurve(report.clauses);
-  renderClauses(report.clauses);
+  renderCurve(report.blocks);
+  renderBlocks(report.blocks);
   activateTab(document.querySelector("#tab-summary"));
 }
 
 function renderSummary(report) {
   const container = document.querySelector("#after-text");
   container.replaceChildren();
-  if (report.mode === "structured-markdown-preserve-all") {
+  if (report.budget.overflowReasons.length) {
     const note = document.createElement("p");
     note.className = "preserve-all-note";
-    note.textContent = "Markdown 標題與條列已構成高密度重點筆記，因此不再簡化。";
-    const preserved = document.createElement("div");
-    preserved.className = "summary-preserved";
-    preserved.textContent = report.output.text;
-    container.append(note, preserved);
-    return;
+    note.textContent = report.budget.overflowReasons.join("；");
+    container.append(note);
   }
-  const selected = report.clauses.filter((clause) => clause.selected);
+  const selected = report.blocks.filter((block) => block.decision !== "omit");
   if (!selected.length) {
     const empty = document.createElement("p");
     empty.className = "empty-summary";
-    empty.textContent = `沒有子句達到 ${report.settings.minExplainability.toFixed(2)} 的可解釋性門檻。可在進階設定降低門檻後重試。`;
+    empty.textContent = `沒有段落達到 ${report.settings.minExplainability.toFixed(2)} 的可解釋性門檻，也沒有必須完整保留的結構區塊。`;
     container.append(empty);
     return;
   }
-  for (const clause of selected) {
+  for (const item of selected) {
     const block = document.createElement("span");
     block.className = "summary-clause";
     const text = document.createElement("span");
-    text.textContent = clause.text;
+    text.textContent = item.outputText;
     block.append(text);
-    appendSignalTags(block, clause.signals, "summary-clause__signals");
+    appendSignalTags(block, item.signals, "summary-clause__signals");
     container.append(block);
   }
 }
 
-function renderCurve(clauses) {
-  const points = buildCumulativeCurve(clauses);
+function renderCurve(blocks) {
+  const points = buildCumulativeCurve(blocks);
   const path = curvePath(points);
   document.querySelector("#curve-line").setAttribute("d", path);
   const area = path ? `${path} L692,192 L28,192 Z` : "";
@@ -181,37 +173,37 @@ function renderCurve(clauses) {
     group.append(circle);
   });
   document.querySelector("#curve-description").textContent = points.length
-    ? `共 ${points.length} 個可計分子句；最後累積至 100%，實心點代表被選入摘要。`
-    : "沒有可計分子句。";
+    ? `共 ${points.length} 個可排名區塊；最後累積至 100%，實心點代表被選入摘要。`
+    : "沒有可排名區塊。";
 }
 
-function renderClauses(clauses) {
-  const list = document.querySelector("#clause-list");
+function renderBlocks(blocks) {
+  const list = document.querySelector("#block-list");
   list.replaceChildren();
-  for (const clause of clauses) {
+  for (const block of blocks) {
     const row = document.createElement("div");
-    row.className = `clause-row${clause.selected ? " is-selected" : ""}`;
+    row.className = `clause-row${block.decision !== "omit" ? " is-selected" : ""}`;
     row.setAttribute("role", "row");
 
     const number = document.createElement("span");
     number.className = "clause-number";
     number.setAttribute("role", "cell");
-    number.textContent = String(clause.clauseIndex + 1).padStart(2, "0");
+    number.textContent = String(block.index + 1).padStart(2, "0");
 
     const copy = document.createElement("div");
     copy.className = "clause-copy";
     copy.setAttribute("role", "cell");
     const text = document.createElement("p");
-    text.textContent = clause.text;
+    text.textContent = block.sourceText;
     copy.append(text);
-    appendSignalTags(copy, clause.signals, "signal-list");
+    appendSignalTags(copy, block.signals, "signal-list");
 
-    const importance = scoreCell("importance", clause.importance, "score-cell--importance");
-    const explainability = scoreCell("explainability", clause.explainability, "score-cell--explain");
+    const importance = scoreCell("relevance", block.score?.relevance, "score-cell--importance");
+    const explainability = scoreCell("final score", block.score?.finalScore, "score-cell--explain");
     const selection = document.createElement("span");
-    selection.className = `selection-state${clause.selected ? " is-selected" : ""}`;
+    selection.className = `selection-state${block.decision !== "omit" ? " is-selected" : ""}`;
     selection.setAttribute("role", "cell");
-    selection.textContent = clause.selected ? "已納入" : clause.eligible ? "未納入" : "不可計分";
+    selection.textContent = block.decision;
     row.append(number, copy, importance, explainability, selection);
     list.append(row);
   }

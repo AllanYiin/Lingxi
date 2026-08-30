@@ -37,9 +37,9 @@ struct Args {
     stats: bool,
     /// Some(n) = 關鍵字模式：全部輸入做 TextRank，取前 n 個。
     keywords: Option<usize>,
-    /// Some(n) = 抽取式摘要模式。
+    /// Some(n) = schema v2 結構感知摘要；n 是最大 prose block 數。
     summary: Option<usize>,
-    /// Some(n) = 摘要測試報告模式：單一 JSON，含全部子句診斷與 token 比較。
+    /// Some(n) = 摘要測試報告模式：單一 JSON，含 block 決策、預算與 token 比較。
     summary_report: Option<usize>,
     /// Some(n) = 關鍵短語模式。
     keyphrases: Option<usize>,
@@ -47,7 +47,7 @@ struct Args {
     sentences: bool,
     /// 結構感知子句 JSONL 模式。
     clauses: bool,
-    /// 一般摘要候選的最低可解釋性；高風險訊號可略過門檻但仍遵守 `top_k`。
+    /// 一般 paragraph／blockquote 的最低可解釋性；所有重點訊號皆為軟加權。
     min_explainability: Option<f32>,
     /// 可選停用詞檔，每行一詞。
     stopwords: Option<String>,
@@ -228,7 +228,7 @@ fn main() -> Result<()> {
                 args.min_explainability,
             )?;
         } else if let Some(top_k) = args.summary {
-            for sentence in seg.extract_summary_with_options(
+            let document = seg.extract_summary_with_options(
                 &text,
                 top_k,
                 &lingxi_core::SummaryOptions {
@@ -238,34 +238,9 @@ fn main() -> Result<()> {
                         .or(lingxi_core::SummaryOptions::default().min_explainability),
                     ..lingxi_core::SummaryOptions::default()
                 },
-            ) {
-                serde_json::to_writer(
-                    &mut out,
-                    &serde_json::json!({
-                        "text": sentence.text,
-                        "byteStart": sentence.byte_start,
-                        "byteEnd": sentence.byte_end,
-                        "index": sentence.sentence_index,
-                        "clauseIndex": sentence.clause_index,
-                        "weight": sentence.weight,
-                        "explainability": sentence.explainability,
-                        "novelty": sentence.novelty,
-                        "coverageGain": sentence.coverage_gain,
-                        "signals": {
-                            "properNounCount": sentence.signals.proper_noun_count,
-                            "negationCount": sentence.signals.negation_count,
-                            "emphasisCount": sentence.signals.emphasis_count,
-                            "listItem": sentence.signals.list_item,
-                            "objectNameCount": sentence.signals.object_name_count,
-                            "dateCount": sentence.signals.date_count,
-                            "numberCount": sentence.signals.number_count,
-                            "quantityCount": sentence.signals.quantity_count,
-                            "acronymCount": sentence.signals.acronym_count,
-                        },
-                    }),
-                )?;
-                out.write_all(b"\n")?;
-            }
+            );
+            serde_json::to_writer(&mut out, &document)?;
+            out.write_all(b"\n")?;
         } else if let Some(top_k) = args.keyphrases {
             for phrase in seg.extract_keyphrases_with_options(
                 &text,
@@ -399,96 +374,22 @@ fn write_summary_report(
     stopwords: Vec<String>,
     min_explainability: Option<f32>,
 ) -> Result<()> {
-    use std::collections::{HashMap, HashSet};
-
     let started = Instant::now();
     let tokenizer = tiktoken_rs::o200k_base_singleton();
     let input_tokens = tokenizer.encode_with_special_tokens(text).len();
     let defaults = lingxi_core::SummaryOptions::default();
     let threshold = min_explainability.or(defaults.min_explainability);
-    let preserve_structured_markdown = lingxi_core::should_preserve_structured_markdown(text);
     let summary = seg.extract_summary_with_options(
         text,
         top_k,
         &lingxi_core::SummaryOptions {
-            stopwords: stopwords.clone(),
+            stopwords,
             min_explainability: threshold,
             ..defaults.clone()
         },
     );
-    let diagnostics = seg.extract_summary_with_options(
-        text,
-        usize::MAX,
-        &lingxi_core::SummaryOptions {
-            min_sentence_chars: 1,
-            stopwords,
-            redundancy_threshold: None,
-            min_explainability: Some(0.0),
-            preserve_original_order: true,
-            ..defaults
-        },
-    );
-    let diagnostic_by_span: HashMap<(usize, usize), _> = diagnostics
-        .iter()
-        .map(|item| ((item.byte_start, item.byte_end), item))
-        .collect();
-    let selected_spans: HashSet<(usize, usize)> = summary
-        .iter()
-        .map(|item| (item.byte_start, item.byte_end))
-        .collect();
-    let summary_text = if preserve_structured_markdown {
-        text.to_string()
-    } else {
-        summary
-            .iter()
-            .map(|item| item.text.as_str())
-            .collect::<Vec<_>>()
-            .join("\n")
-    };
-    let output_tokens = tokenizer.encode_with_special_tokens(&summary_text).len();
-    let clauses = seg
-        .split_clauses(text)
-        .into_iter()
-        .map(|clause| {
-            let key = (clause.byte_start, clause.byte_end);
-            let diagnostic = diagnostic_by_span.get(&key).copied();
-            serde_json::json!({
-                "text": clause.text,
-                "byteStart": clause.byte_start,
-                "byteEnd": clause.byte_end,
-                "sentenceIndex": clause.sentence_index,
-                "clauseIndex": clause.clause_index,
-                "listItem": clause.list_item,
-                "eligible": diagnostic.is_some(),
-                "selected": selected_spans.contains(&key),
-                "importance": diagnostic.map(|item| item.weight),
-                "explainability": diagnostic.map(|item| item.explainability),
-                "novelty": diagnostic.map(|item| item.novelty),
-                "coverageGain": diagnostic.map(|item| item.coverage_gain),
-                "signals": diagnostic.map(|item| serde_json::json!({
-                    "properNounCount": item.signals.proper_noun_count,
-                    "negationCount": item.signals.negation_count,
-                    "emphasisCount": item.signals.emphasis_count,
-                    "listItem": item.signals.list_item,
-                    "objectNameCount": item.signals.object_name_count,
-                    "dateCount": item.signals.date_count,
-                    "numberCount": item.signals.number_count,
-                    "quantityCount": item.signals.quantity_count,
-                    "acronymCount": item.signals.acronym_count,
-                })).unwrap_or_else(|| serde_json::json!({
-                    "properNounCount": 0,
-                    "negationCount": 0,
-                    "emphasisCount": 0,
-                    "listItem": clause.list_item,
-                    "objectNameCount": 0,
-                    "dateCount": 0,
-                    "numberCount": 0,
-                    "quantityCount": 0,
-                    "acronymCount": 0,
-                })),
-            })
-        })
-        .collect::<Vec<_>>();
+    let summary_text = summary.text.as_str();
+    let output_tokens = tokenizer.encode_with_special_tokens(summary_text).len();
     let elapsed_ms = started.elapsed().as_secs_f64() * 1000.0;
     let reduction_percent = if input_tokens == 0 {
         0.0
@@ -496,12 +397,9 @@ fn write_summary_report(
         (1.0 - output_tokens as f64 / input_tokens as f64) * 100.0
     };
     let value = serde_json::json!({
+        "schemaVersion": summary.schema_version,
         "engine": "lingxi-core",
-        "mode": if preserve_structured_markdown {
-            "structured-markdown-preserve-all"
-        } else {
-            "extractive-summary"
-        },
+        "mode": summary.mode,
         "llmCalls": 0,
         "tokenizer": "o200k_base (tiktoken)",
         "input": {
@@ -511,16 +409,22 @@ fn write_summary_report(
         "output": {
             "text": summary_text,
             "tokens": output_tokens,
-            "selectedClauses": summary.len(),
+            "selectedBlocks": summary.budget.selected_ranked_blocks,
         },
         "settings": {
-            "maxClauses": top_k,
+            "maxBlocks": top_k,
             "minExplainability": threshold,
+            "longBlockMinClauses": defaults.long_block_min_clauses,
+            "longBlockMinChars": defaults.long_block_min_chars,
+            "longBlockMinWords": defaults.long_block_min_words,
+            "maxClausesPerLongBlock": defaults.max_clauses_per_long_block,
+            "maxClausesPerLongListItem": defaults.max_clauses_per_long_list_item,
         },
-        "clauseCount": clauses.len(),
+        "blockCount": summary.blocks.len(),
         "reductionPercent": reduction_percent,
         "elapsedMs": elapsed_ms,
-        "clauses": clauses,
+        "budget": summary.budget,
+        "blocks": summary.blocks,
     });
     serde_json::to_writer(&mut *out, &value)?;
     out.write_all(b"\n")?;

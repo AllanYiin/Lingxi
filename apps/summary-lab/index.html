@@ -46,8 +46,8 @@
             <details class="settings-disclosure">
               <summary>進階設定</summary>
               <div class="settings-grid">
-                <label>摘要子句上限
-                  <input id="max-clauses" type="number" min="1" max="100" value="12">
+                <label>摘要段落上限
+                  <input id="max-blocks" type="number" min="1" max="100" value="12">
                 </label>
                 <label>最低可解釋性
                   <input id="min-explainability" type="number" min="0" max="1" step="0.05" value="0.35">
@@ -77,7 +77,7 @@
 
       <div class="tabs" role="tablist" aria-label="摘要測試報告分頁">
         <button id="tab-summary" role="tab" aria-selected="true" aria-controls="panel-summary" tabindex="0">摘要結果</button>
-        <button id="tab-diagnostics" role="tab" aria-selected="false" aria-controls="panel-diagnostics" tabindex="-1">句子診斷</button>
+        <button id="tab-diagnostics" role="tab" aria-selected="false" aria-controls="panel-diagnostics" tabindex="-1">區塊診斷</button>
       </div>
 
       <section id="panel-summary" role="tabpanel" aria-labelledby="tab-summary">
@@ -107,7 +107,7 @@
 
       <section id="panel-diagnostics" role="tabpanel" aria-labelledby="tab-diagnostics" hidden>
         <div class="diagnostic-intro">
-          <p><strong id="clause-count">0</strong> 個子句，<strong id="selected-count">0</strong> 個納入摘要。顏色與文字標籤表示規則加權來源。</p>
+          <p><strong id="block-count">0</strong> 個區塊，<strong id="selected-count">0</strong> 個排名段落納入摘要。顏色與文字標籤表示規則加權來源。</p>
           <div class="signal-legend" aria-label="特殊加權圖例">
             <span class="signal-tag signal--proper">專有名詞</span>
             <span class="signal-tag signal--negation">否定</span>
@@ -117,6 +117,7 @@
             <span class="signal-tag signal--date">日期</span>
             <span class="signal-tag signal--number">數字</span>
             <span class="signal-tag signal--quantity">數值＋單位</span>
+            <span class="signal-tag signal--quantity">金額</span>
             <span class="signal-tag signal--acronym">縮略語</span>
           </div>
         </div>
@@ -124,7 +125,7 @@
         <figure class="curve-figure">
           <figcaption>
             <strong>解釋性累積曲線</strong>
-            <span>依單句 explainability 由高至低排列；曲線越早趨平，代表後續子句的解釋貢獻越低。</span>
+            <span>依區塊 final score 由高至低排列；曲線越早趨平，代表後續區塊的解釋貢獻越低。</span>
           </figcaption>
           <svg id="curve-chart" viewBox="0 0 720 220" role="img" aria-labelledby="curve-title curve-description">
             <title id="curve-title">解釋性累積曲線</title>
@@ -141,15 +142,15 @@
           </svg>
         </figure>
 
-        <div class="clause-table" role="table" aria-label="逐句重要性與可解釋性">
+        <div class="clause-table" role="table" aria-label="逐區塊重要性與決策">
           <div class="clause-row clause-row--header" role="row">
-            <span role="columnheader">句</span>
-            <span role="columnheader">原文子句與加權理由</span>
+            <span role="columnheader">區塊</span>
+            <span role="columnheader">原文區塊與加權理由</span>
             <span role="columnheader">重要性</span>
             <span role="columnheader">解釋性</span>
             <span role="columnheader">結果</span>
           </div>
-          <div id="clause-list" role="rowgroup"></div>
+          <div id="block-list" role="rowgroup"></div>
         </div>
       </section>
     </section>
