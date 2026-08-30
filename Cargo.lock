@@ -399,7 +399,7 @@ checksum = "3eaf3ede3fee6db1a4c2ee091bf8a8b4dccdc6d17f656fb07896ee72867612f2"
 
 [[package]]
 name = "lingxi-cli"
-version = "0.3.0"
+version = "0.4.5"
 dependencies = [
  "anyhow",
  "lingxi-core",
@@ -410,7 +410,7 @@ dependencies = [
 
 [[package]]
 name = "lingxi-convert"
-version = "0.3.0"
+version = "0.4.5"
 dependencies = [
  "anyhow",
  "daachorse",
@@ -420,7 +420,7 @@ dependencies = [
 
 [[package]]
 name = "lingxi-core"
-version = "0.3.0"
+version = "0.4.5"
 dependencies = [
  "criterion",
  "daachorse",
@@ -433,7 +433,7 @@ dependencies = [
 
 [[package]]
 name = "lingxi-ffi"
-version = "0.3.0"
+version = "0.4.5"
 dependencies = [
  "lingxi-core",
  "serde_json",
@@ -441,7 +441,7 @@ dependencies = [
 
 [[package]]
 name = "lingxi-py"
-version = "0.3.0"
+version = "0.4.5"
 dependencies = [
  "lingxi-core",
  "pyo3",
@@ -450,7 +450,7 @@ dependencies = [
 
 [[package]]
 name = "lingxi-wasm"
-version = "0.3.0"
+version = "0.4.5"
 dependencies = [
  "lingxi-core",
  "serde",

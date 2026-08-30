@@ -6,7 +6,7 @@
 
 流程：
     1. 檢查 assets/*.bin 是否齊全；缺少時提示（或加 --convert 自動跑 lingxi-convert）
-    2. 複製三個 .bin 到 crates/lingxi-py/python/lingxi/assets/（只在內容有變時覆蓋）
+    2. 同步三個必要模型與可選 affect.bin，並移除過期 package asset
     3. maturin build --release，結束時印出 wheel 路徑
 """
 from __future__ import annotations
@@ -22,10 +22,13 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 ASSETS = ROOT / "assets"
 PY_ASSETS = ROOT / "crates" / "lingxi-py" / "python" / "lingxi" / "assets"
+PY_PACKAGE = ROOT / "crates" / "lingxi-py" / "python" / "lingxi"
 PY_CRATE = ROOT / "crates" / "lingxi-py"
 WHEELS = ROOT / "target" / "wheels"
 
 REQUIRED = ["dict.bin", "hmm_bmes.bin", "hmm_pos.bin"]
+OPTIONAL = ["affect.bin"]
+PACKAGE_ASSETS = REQUIRED + OPTIONAL
 
 # lingxi-convert 的單一 canonical model directory。
 CANONICAL_MODEL = ROOT / ".corpus-work" / "legacy-ckip-canonical-v3" / "model"
@@ -64,10 +67,19 @@ def ensure_assets(auto_convert: bool) -> None:
 
 
 def sync_assets() -> None:
-    """複製 .bin 到 wheel 的 package data 目錄；內容相同時跳過以保留 mtime。"""
+    """同步 wheel 資產，並移除先前建置殘留的過期模型。"""
+    for cache in PY_PACKAGE.rglob("__pycache__"):
+        shutil.rmtree(cache)
+        print(f"  移除 Python cache：{cache.relative_to(ROOT)}")
     PY_ASSETS.mkdir(parents=True, exist_ok=True)
-    for name in REQUIRED:
+    for stale in PY_ASSETS.glob("*.bin"):
+        if stale.name not in PACKAGE_ASSETS:
+            stale.unlink()
+            print(f"  移除過期 package asset：{stale.name}")
+    for name in PACKAGE_ASSETS:
         src = ASSETS / name
+        if not src.exists():
+            continue
         dst = PY_ASSETS / name
         if dst.exists() and filecmp.cmp(src, dst, shallow=False):
             print(f"  {name} 未變更，跳過")
