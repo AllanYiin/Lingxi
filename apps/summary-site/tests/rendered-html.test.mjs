@@ -23,8 +23,9 @@ test("server-renders the LingXi Summary product surface", async () => {
   assert.match(html, /跳至摘要工具/);
   assert.match(html, /0 LLM/);
   assert.match(html, /產生摘要/);
-  assert.match(html, /摘要區塊數/);
-  assert.match(html, /區塊抽取/);
+  assert.match(html, /摘要段落上限/);
+  assert.match(html, /選段 · 子句 · POS 精簡/);
+  assert.match(html, /載入 LingXi 詞性模型/);
   assert.doesNotMatch(html, /Your site is taking shape|codex-preview/);
 });
 

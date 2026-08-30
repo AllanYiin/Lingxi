@@ -1,7 +1,17 @@
 "use client";
 
-import { useMemo, useState, type KeyboardEvent } from "react";
-import { summarize } from "./summary-engine";
+import { useEffect, useRef, useState, type KeyboardEvent } from "react";
+import { loadLingxiPos, type LingxiPosSegmenter } from "./lingxi/loader";
+import { summarize, type Decision } from "./summary-engine";
+
+const decisionLabels: Record<Decision, string> = {
+  preserve_exact: "結構原文保留",
+  select_exact: "短段原文保留",
+  summarize_within: "段內濃縮",
+  compact_pos: "詞性精簡",
+  context_only: "脈絡標題",
+  omit: "省略",
+};
 
 const sample = `LingXi Summary 完全在瀏覽器本機執行，不會呼叫任何 LLM，也不會把原文傳送到外部服務。
 版權頁記載本文件建立於2026年。研究核心發現是：抽取式摘要可以維持原文忠實性，並避免生成不存在的資訊。
@@ -13,7 +23,28 @@ export default function Home() {
   const [limit, setLimit] = useState(3);
   const [submitted, setSubmitted] = useState(sample);
   const [activeView, setActiveView] = useState<"tool" | "about">("tool");
-  const report = useMemo(() => summarize(submitted, limit), [submitted, limit]);
+  const [report, setReport] = useState(() => summarize(sample, 3));
+  const [modelStatus, setModelStatus] = useState<"loading" | "ready" | "error">("loading");
+  const segmenterRef = useRef<LingxiPosSegmenter | null>(null);
+
+  useEffect(() => {
+    let active = true;
+    loadLingxiPos().then((segmenter) => {
+      if (!active) return;
+      segmenterRef.current = segmenter;
+      setModelStatus("ready");
+      setReport(summarize(sample, 3, segmenter.tokenize(sample)));
+    }).catch(() => {
+      if (active) setModelStatus("error");
+    });
+    return () => { active = false; };
+  }, []);
+
+  const handleGenerate = () => {
+    const segmenter = segmenterRef.current;
+    setSubmitted(text);
+    setReport(summarize(text, limit, segmenter ? segmenter.tokenize(text) : []));
+  };
 
   const handleViewTabKeyDown = (event: KeyboardEvent<HTMLButtonElement>) => {
     if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return;
@@ -55,23 +86,26 @@ export default function Home() {
           <div className="panel-heading"><div><span className="step">01</span><h1>貼入原文</h1></div><span className="counter">{[...text].length.toLocaleString("zh-TW")} 字</span></div>
           <textarea value={text} onChange={(event) => setText(event.target.value)} placeholder="在這裡貼入繁體中文內容…" aria-label="要摘要的原文" />
           <div className="controls">
-            <label>摘要區塊數<input type="number" min="1" max="12" value={limit} onChange={(event) => setLimit(Math.max(1, Math.min(12, Number(event.target.value) || 1)))} /></label>
-            <button type="button" onClick={() => setSubmitted(text)} disabled={!text.trim()}>產生摘要 <span aria-hidden="true">→</span></button>
+            <label>摘要段落上限<input type="number" min="1" max="12" value={limit} onChange={(event) => setLimit(Math.max(1, Math.min(12, Number(event.target.value) || 1)))} /></label>
+            <div className="run-control">
+              <span className={`model-status ${modelStatus}`} role="status">{modelStatus === "loading" ? "載入 LingXi 詞性模型…" : modelStatus === "ready" ? "LingXi POS 已就緒" : "詞性模型載入失敗，改用規則備援"}</span>
+              <button type="button" onClick={handleGenerate} disabled={!text.trim() || modelStatus === "loading"}>產生摘要 <span aria-hidden="true">→</span></button>
+            </div>
           </div>
         </div>
 
         <div className="panel output-panel" aria-live="polite">
-          <div className="panel-heading"><div><span className="step">02</span><h2>摘要結果</h2></div><span className="mode">{report.mode === "structured-preserve" ? "完整保留" : "區塊抽取"}</span></div>
+          <div className="panel-heading"><div><span className="step">02</span><h2>摘要結果</h2></div><span className="mode">選段 · 子句 · POS 精簡</span></div>
           <div className="summary-paper">
-            {report.selected.length ? report.selected.map((item) => (
-              <article key={item.index} className="summary-item"><p>{item.text}</p><div className="reason-row">{(item.reasons.length ? item.reasons : ["主題段落"]).map((reason) => <span key={reason}>{reason}</span>)}</div></article>
-            )) : <p className="empty">{submitted.trim() ? "沒有找到可獨立解讀的正文區塊；程式碼不會單獨成為摘要。" : "貼入內容後產生摘要。"}</p>}
+            {report.blocks.some((item) => item.decision !== "omit") ? report.blocks.filter((item) => item.decision !== "omit").map((item) => (
+              <article key={item.index} className="summary-item"><p>{item.outputText}</p><div className="reason-row"><span>{item.kind}</span><span>{decisionLabels[item.decision]}</span>{item.removedTokens.length ? <span>詞性精簡 {item.removedTokens.length} 詞</span> : null}</div></article>
+            )) : <p className="empty">{submitted.trim() ? "沒有段落達到門檻，也沒有必須完整保留的結構區塊。" : "貼入內容後產生摘要。"}</p>}
           </div>
           <dl className="metrics"><div><dt>原文字數</dt><dd>{report.inputChars.toLocaleString("zh-TW")}</dd></div><div><dt>摘要字數</dt><dd>{report.outputChars.toLocaleString("zh-TW")}</dd></div><div><dt>減量比例</dt><dd>{report.reductionPercent.toFixed(1)}%</dd></div></dl>
         </div>
       </section>
 
-      <footer><p>Web-compatible deterministic edition</p><p>內容不會離開此頁面，也不會保存。</p></footer>
+      <footer><p>LingXi POS deterministic edition</p><p>內容不會離開此頁面，也不會保存。</p></footer>
     </main>
   );
 }
