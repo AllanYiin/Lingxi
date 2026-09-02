@@ -53,7 +53,7 @@ jobs:
           checksums = {}
           for line in (source / "SHA256SUMS.txt").read_text().splitlines():
               digest, filename = line.split(maxsplit=1)
-              checksums[filename.lstrip("*")] = digest.lower()
+              checksums[Path(filename.lstrip("*")).name] = digest.lower()
           assert build_release.sha256(wheel) == checksums[wheel.name], "Source wheel checksum mismatch"
 
           with zipfile.ZipFile(wheel) as archive:
