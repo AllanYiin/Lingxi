@@ -1,0 +1,133 @@
+name: Linux Python wheel
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: Existing release containing the approved model assets
+        required: true
+        default: v0.4.5
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  wheel:
+    name: Linux x86_64 / CPython 3.9+ / manylinux2014
+    runs-on: ubuntu-22.04
+    timeout-minutes: 30
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: Set up Python 3.9
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: '3.9'
+
+      - name: Download approved model source
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+        run: |
+          python -c 'import os; from tools.build_release import workspace_version; assert os.environ["RELEASE_TAG"] == "v" + workspace_version(), "Release and source versions must match"'
+          gh release download "$RELEASE_TAG" \
+            --pattern "lingxi-*-cp39-abi3-win_amd64.whl" \
+            --pattern SHA256SUMS.txt \
+            --dir target/wheel-source
+
+      - name: Verify and prepare bundled models
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import hashlib
+          import zipfile
+          from tools import build_release, build_wheel
+
+          source = Path("target/wheel-source")
+          wheels = list(source.glob("*.whl"))
+          assert len(wheels) == 1, f"Expected one source wheel, got {wheels}"
+          wheel = wheels[0]
+          checksums = {}
+          for line in (source / "SHA256SUMS.txt").read_text().splitlines():
+              digest, filename = line.split(maxsplit=1)
+              checksums[filename.lstrip("*")] = digest.lower()
+          assert build_release.sha256(wheel) == checksums[wheel.name], "Source wheel checksum mismatch"
+
+          with zipfile.ZipFile(wheel) as archive:
+              for name in build_wheel.PACKAGE_ASSETS:
+                  entry = f"lingxi/assets/{name}"
+                  if name in build_wheel.OPTIONAL and entry not in archive.namelist():
+                      continue
+                  data = archive.read(entry)
+                  expected = build_release.REQUIRED_ASSET_HASHES.get(name)
+                  if expected:
+                      assert hashlib.sha256(data).hexdigest().upper() == expected, f"Unapproved model: {name}"
+                  build_wheel.ASSETS.mkdir(parents=True, exist_ok=True)
+                  (build_wheel.ASSETS / name).write_bytes(data)
+          build_release.verify_source_assets()
+          build_wheel.sync_assets()
+          PY
+
+      - name: Build manylinux2014 abi3 wheel
+        uses: PyO3/maturin-action@423a6347767a8b16e65c2a7a7042e4a921528da8 # v1
+        with:
+          maturin-version: v1.15.0
+          rust-toolchain: '1.96.0'
+          target: x86_64-unknown-linux-gnu
+          manylinux: '2014'
+          args: >-
+            --manifest-path crates/lingxi-py/Cargo.toml
+            --release --locked --strip
+            --interpreter python3.11
+            --out dist/linux-wheels
+
+      - name: Check wheel contents and test on Python 3.9
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          from tools.build_release import validate_wheel, verify_source_assets
+
+          wheels = list(Path("dist/linux-wheels").glob("lingxi-*-cp39-abi3-manylinux*x86_64.whl"))
+          assert len(wheels) == 1, f"Expected one Linux abi3 wheel, got {wheels}"
+          validate_wheel(wheels[0], verify_source_assets())
+          PY
+
+      - name: Set up Python 3.13
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: '3.13'
+
+      - name: Test installation, POS and summaries on Python 3.13
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          from tools.build_release import validate_wheel, verify_source_assets
+
+          wheel = next(Path("dist/linux-wheels").glob("*.whl"))
+          validate_wheel(wheel, verify_source_assets())
+          PY
+
+      - name: Write checksums and build provenance
+        env:
+          SOURCE_SHA: ${{ github.sha }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          cd dist/linux-wheels
+          sha256sum *.whl > SHA256SUMS.txt
+          printf 'Source commit: %s\nModel release: %s\nBuild: %s\nPlatform: manylinux2014 x86_64\nTested Python: 3.9, 3.13\n' \
+            "$SOURCE_SHA" "$RELEASE_TAG" "$RUN_URL" > BUILD.txt
+          cat BUILD.txt >> "$GITHUB_STEP_SUMMARY"
+          cat SHA256SUMS.txt >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload validated Linux wheel
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: lingxi-linux-x86_64
+          path: dist/linux-wheels/
+          if-no-files-found: error
+          retention-days: 30
+          compression-level: 0
