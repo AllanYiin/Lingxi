@@ -129,5 +129,5 @@ jobs:
           name: lingxi-linux-x86_64
           path: dist/linux-wheels/
           if-no-files-found: error
-          retention-days: 30
+          retention-days: 7
           compression-level: 0
